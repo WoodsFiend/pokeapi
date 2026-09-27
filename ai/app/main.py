@@ -72,7 +72,7 @@ if device == "cuda":
     pipe = Flux2KleinPipeline.from_pretrained(
         IMAGE_GEN_MODEL,
         token=TOKEN,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     )
     pipe.to("cuda")
 
@@ -81,7 +81,7 @@ else:
     pipe = Flux2KleinPipeline.from_pretrained(
         IMAGE_GEN_MODEL,
         token=TOKEN,
-        torch_dtype=torch.float32,
+        dtype=torch.float32,
     )
 
     pipe.to("cpu")
@@ -94,7 +94,6 @@ torch.set_grad_enabled(False)
 
 audio_model = StableAudioModel.from_pretrained(
     "small-sfx",
-    token=TOKEN,
 )
 
 @app.get("/health")
