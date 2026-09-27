@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import requests
 import random
 import torch
+import torchaudio
 import os
 from diffusers import Flux2KleinPipeline
 from PIL import Image
@@ -163,7 +164,7 @@ def generate(request: GenerateImageRequest):
         num_inference_steps=4,
     )
 
-    generated_image = result.images[0]
+    generated_image = result.images[0].convert("RGBA")
     
     generated_image = remove_background(generated_image)
 
@@ -259,17 +260,39 @@ def remove_background(image: Image.Image) -> Image.Image:
 @app.post("/generateCry")
 def generate_audio(request: GenerateAudioRequest):
     prompt = (
-        f"Create a completely original sound effect inspired by the description: {request.description}. "
+        f"Create a completely original creature cry sound effect inspired by "
+        f"the description: {request.description}. "
         f"Make the sound effect suitable for a video game."
     )
 
-    audio = audio_model.generate(prompt=prompt, duration=1)
+    audio = audio_model.generate(
+        prompt=prompt,
+        duration=1,
+    )
 
+    # Stable Audio returns a torch Tensor.
+    # Make sure it has [channels, samples] shape.
+    if audio.dim() == 3:
+        audio = audio.squeeze(0)
+
+    audio = audio.detach().cpu()
+    print("Audio type:", type(audio))
+    print("Audio shape:", audio.shape)
     audio_buffer = BytesIO()
-    audio.save(audio_buffer, format="WAV")
+
+    torchaudio.save(
+        audio_buffer,
+        audio,
+        sample_rate=44100,
+        format="wav",
+    )
+
     audio_buffer.seek(0)
 
     return StreamingResponse(
         audio_buffer,
-        media_type="audio/wav"
+        media_type="audio/wav",
+        headers={
+            "Content-Disposition": "inline; filename=creature.wav"
+        },
     )

@@ -3,6 +3,7 @@ uvicorn[standard]
 transformers
 torch
 torchvision
+torchaudio
 requests
 diffusers
 accelerate
