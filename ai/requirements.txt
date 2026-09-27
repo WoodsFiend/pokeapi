@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+transformers
+torch
+torchvision
+requests
+diffusers
+accelerate
+pillow
+numpy
+onnxruntime-gpu==1.22.0
+huggingface_hub
+git+https://github.com/Stability-AI/stable-audio-3.git

@@ -66,8 +66,23 @@ services:
       HASURA_GRAPHQL_UNAUTHORIZED_ROLE: anon
       HASURA_GRAPHQL_ENABLE_TELEMETRY: "false"
       # HASURA_GRAPHQL_CONSOLE_ASSETS_DIR: /srv/console-assets
-
+  ai:
+    build:
+      context: ./ai
+    container_name: pokemon-ai
+    ports:
+      - "8001:8000"
+    env_file:
+      - ./ai/.env
+    gpus: all
+    environment:
+      - HF_HOME=/cache/huggingface
+    volumes:
+      - huggingface-cache:/cache/huggingface
+    depends_on:
+      - app
 volumes:
   pg_data:
   redis_data:
   graphql_cache:
+  huggingface-cache:
