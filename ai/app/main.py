@@ -13,11 +13,16 @@ import numpy as np
 from stable_audio_3 import StableAudioModel
 from huggingface_hub import hf_hub_download
 import onnxruntime as ort
+import base64
 
 app = FastAPI(
     title="Pokemon AI Service",
     version="1.0.0",
 )
+
+image_model = None
+background_removal_model = None
+audio_model = None
 
 class GenerateImageRequest(BaseModel):
     type: str
@@ -25,77 +30,77 @@ class GenerateImageRequest(BaseModel):
 class GenerateAudioRequest(BaseModel):
     description: str
 
+def setup():
+    global image_model
+    global background_removal_model
+    global audio_model
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
 
-print(f"Using device: {device}")
+    # Hugging Face token for private model access
+    TOKEN = os.getenv("HF_TOKEN")
 
-IMAGE_GEN_MODEL = os.getenv(
-    "HF_MODEL",
-    "black-forest-labs/FLUX.2-klein-4B",
-)
-
-TOKEN = os.getenv("HF_TOKEN")
-
-# ----------------------------------------
-# BiRefNet
-# ----------------------------------------
-
-BACKGROUND_REMOVAL_MODEL = (
-    "studioludens/birefnet-lite-512"
-)
-
-background_model_path = hf_hub_download(
-    repo_id=BACKGROUND_REMOVAL_MODEL,
-    filename="onnx/model_fp16.onnx",
-    token=TOKEN,
-)
-
-background_removal_model = ort.InferenceSession(
-    background_model_path,
-    providers=[
-        "CUDAExecutionProvider",
-        "CPUExecutionProvider",
-    ],
-)
-
-print(
-    "Background removal providers:",
-    background_removal_model.get_providers(),
-)
-
-# ----------------------------------------
-# FLUX
-# ----------------------------------------
-
-if device == "cuda":
-
-    pipe = Flux2KleinPipeline.from_pretrained(
-        IMAGE_GEN_MODEL,
-        token=TOKEN,
-        dtype=torch.bfloat16,
+    # ----------------------------------------
+    # Background Removal Model
+    # ----------------------------------------
+    BACKGROUND_REMOVAL_MODEL = (
+        "studioludens/birefnet-lite-512"
     )
-    pipe.to("cuda")
-
-else:
-
-    pipe = Flux2KleinPipeline.from_pretrained(
-        IMAGE_GEN_MODEL,
+    background_model_path = hf_hub_download(
+        repo_id=BACKGROUND_REMOVAL_MODEL,
+        filename="onnx/model_fp16.onnx",
         token=TOKEN,
-        dtype=torch.float32,
+    )
+    background_removal_model = ort.InferenceSession(
+        background_model_path,
+        providers=[
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ],
+    )
+    print(
+        "Background removal providers:",
+        background_removal_model.get_providers(),
     )
 
-    pipe.to("cpu")
+    # ----------------------------------------
+    # Image Generation Model
+    # ----------------------------------------
+    IMAGE_GEN_MODEL = os.getenv(
+        "HF_MODEL",
+        "black-forest-labs/FLUX.2-klein-4B",
+    )
+    if device == "cuda":
 
-torch.set_grad_enabled(False)
+        image_model = Flux2KleinPipeline.from_pretrained(
+            IMAGE_GEN_MODEL,
+            token=TOKEN,
+            dtype=torch.bfloat16,
+        )
+        image_model.to("cuda")
+    else:
 
-# ----------------------------------------
-# Stable Audio
-# ----------------------------------------
+        image_model = Flux2KleinPipeline.from_pretrained(
+            IMAGE_GEN_MODEL,
+            token=TOKEN,
+            dtype=torch.float32,
+        )
 
-audio_model = StableAudioModel.from_pretrained(
-    "small-sfx",
-)
+        image_model.to("cpu")
+
+    torch.set_grad_enabled(False)
+
+    # ----------------------------------------
+    # Audio Generation Model
+    # ----------------------------------------
+    audio_model = StableAudioModel.from_pretrained(
+        "small-sfx",
+    )
+
+@app.on_event("startup")
+def startup():
+    setup()
 
 @app.get("/health")
 def health():
@@ -105,48 +110,116 @@ def health():
 
 @app.post("/generate")
 def generate(request: GenerateImageRequest):
-    response = requests.get(
-        "http://app/api/v2/type/" + request.type + "/"
+    random_pokemon = get_random_pokemon_by_type(
+        request.type
     )
-    # Handle the response and select a random Pokemon from the type.pokemon array
-    if response.status_code != 200:
-        return {
-            "error": "Failed to fetch Pokemon data from PokeAPI"
-        }
-    # Handle the response and select a random Pokemon from the type.pokemon array
-    data = response.json()
-    if "pokemon" not in data or not data["pokemon"]:
-        return {
-            "error": "No Pokemon found for the specified type"
-        }
-    
-    random_pokemon = random.choice(data["pokemon"])["pokemon"]
+    image = generate_image_data(random_pokemon, request.type)
+
+    name = generate_name_from_image(
+        image,
+        request.type,
+    )
+
+    description = generate_description_from_image(
+        image,
+        request.type,
+    )
+
+    audio = generate_audio_data(
+        GenerateAudioRequest(
+            description=description,
+        )
+    )
+
+    # Convert image to PNG bytes
+    image_buffer = BytesIO()
+    image.save(
+        image_buffer,
+        format="PNG",
+    )
+
+    image_base64 = base64.b64encode(
+        image_buffer.getvalue()
+    ).decode("utf-8")
+
+    # Convert audio to WAV bytes
+    audio_buffer = BytesIO()
+
+    torchaudio.save(
+        audio_buffer,
+        audio,
+        sample_rate=44100,
+        format="wav",
+    )
+
+    audio_base64 = base64.b64encode(
+        audio_buffer.getvalue()
+    ).decode("utf-8")
+
+    return {
+        "pokemon": random_pokemon,
+        "image": image_base64,
+        "name": name,
+        "description": description,
+        "cry": audio_base64,
+    }
+
+@app.post("/generateImage")
+def generate_image(request: GenerateImageRequest):
+    random_pokemon = get_random_pokemon_by_type(
+        request.type
+    )
+    image = generate_image_data(random_pokemon, request.type)
+
+    image_buffer = BytesIO()
+
+    image.save(
+        image_buffer,
+        format="PNG",
+    )
+
+    image_buffer.seek(0)
+
+    return StreamingResponse(
+        image_buffer,
+        media_type="image/png",
+    )
+
+@app.post("/generateCry")
+def generate_audio(request: GenerateAudioRequest):
+    audio = generate_audio_data(request)
+
+    audio_buffer = BytesIO()
+
+    torchaudio.save(
+        audio_buffer,
+        audio,
+        sample_rate=44100,
+        format="wav",
+    )
+
+    audio_buffer.seek(0)
+
+    return StreamingResponse(
+        audio_buffer,
+        media_type="audio/wav",
+        headers={
+            "Content-Disposition": "inline; filename=creature.wav"
+        },
+    )
+
+def generate_image_data(random_pokemon: dict, type: str) -> Image.Image:
     name = random_pokemon["name"]
     pokemon_url = random_pokemon["url"]
 
-    # Get the pokemon from the pokemon url
-    pokemon_response = requests.get(pokemon_url)
-    if pokemon_response.status_code != 200:
-        return {
-            "error": "Failed to fetch Pokemon data from PokeAPI"
-        }
-    imageFrontUrl = pokemon_response.json()["sprites"]["front_default"]
-
-    # Get the image from the imageFrontUrl
-    image_response = requests.get(imageFrontUrl)
-    if image_response.status_code != 200:
-        return {
-            "error": "Failed to fetch Pokemon image from PokeAPI"
-        }
-    
-    input_image = Image.open(
-        BytesIO(image_response.content)
-    ).convert("RGB")
+    input_image = get_pokemon_image(
+        pokemon_url
+    )
 
     prompt = (
         f"Create a completely original creature inspired by the visual "
         f"characteristics of {name}. "
-        f"The creature should be a {request.type}-type fantasy creature. "
+        f"The creature should be a {type}-type fantasy creature. "
         f"Do not copy the original creature exactly. "
         f"Do not include shadows or reflections. "
         f"Do not include text. "
@@ -155,7 +228,7 @@ def generate(request: GenerateImageRequest):
         f"Create a polished video game creature."
     )
 
-    result = pipe(
+    result = image_model(
         prompt=prompt,
         image=input_image,
         height=512,
@@ -165,17 +238,65 @@ def generate(request: GenerateImageRequest):
     )
 
     generated_image = result.images[0].convert("RGBA")
-    
-    generated_image = remove_background(generated_image)
 
-    image_buffer = BytesIO()
-    generated_image.save(image_buffer, format="PNG")
-    image_buffer.seek(0)
+    return remove_background(generated_image)
 
-    return StreamingResponse(
-        image_buffer,
-        media_type="image/png"
+def generate_audio_data(
+    request: GenerateAudioRequest,
+) -> torch.Tensor:
+
+    prompt = (
+        f"Create a completely original creature cry sound effect inspired by "
+        f"the description: {request.description}. "
+        f"Make the sound effect suitable for a video game."
     )
+
+    audio = audio_model.generate(
+        prompt=prompt,
+        duration=1,
+    )
+
+    if audio.dim() == 3:
+        audio = audio.squeeze(0)
+
+    return audio.detach().cpu()
+
+def get_random_pokemon_by_type(pokemon_type: str):
+    response = requests.get(
+        f"https://pokeapi.co/api/v2/type/{pokemon_type}/"
+    )
+    if response.status_code != 200:
+        raise ValueError("Failed to fetch Pokemon data from PokeAPI")
+    
+    data = response.json()
+    if "pokemon" not in data or not data["pokemon"]:
+        raise ValueError("No Pokemon found for the specified type")
+    
+    random_pokemon = random.choice(data["pokemon"])["pokemon"]
+    return random_pokemon
+
+def get_pokemon_image(pokemon_url: str):
+    response = requests.get(pokemon_url)
+    if response.status_code != 200:
+        raise ValueError("Failed to fetch Pokemon data from PokeAPI")
+    
+    data = response.json()
+    if "sprites" not in data or "front_default" not in data["sprites"]:
+        raise ValueError("No image found for the specified Pokemon")
+
+    image_front_url = data["sprites"]["front_default"]
+    # Get the image from the imageFrontUrl
+    image_response = requests.get(image_front_url)
+    if image_response.status_code != 200:
+        return {
+            "error": "Failed to fetch Pokemon image from PokeAPI"
+        }
+    
+    image = Image.open(
+        BytesIO(image_response.content)
+    ).convert("RGB")
+
+    return image
 
 def remove_background(image: Image.Image) -> Image.Image:
     original_size = image.size
@@ -257,42 +378,12 @@ def remove_background(image: Image.Image) -> Image.Image:
 
     return result
 
-@app.post("/generateCry")
-def generate_audio(request: GenerateAudioRequest):
-    prompt = (
-        f"Create a completely original creature cry sound effect inspired by "
-        f"the description: {request.description}. "
-        f"Make the sound effect suitable for a video game."
-    )
+def generate_description_from_image(image: Image.Image, type: str) -> str:
+    # Placeholder for image captioning logic.
+    # In a real implementation, you would use an image captioning model here.
+    return f"A unique {type} creature."
 
-    audio = audio_model.generate(
-        prompt=prompt,
-        duration=1,
-    )
-
-    # Stable Audio returns a torch Tensor.
-    # Make sure it has [channels, samples] shape.
-    if audio.dim() == 3:
-        audio = audio.squeeze(0)
-
-    audio = audio.detach().cpu()
-    print("Audio type:", type(audio))
-    print("Audio shape:", audio.shape)
-    audio_buffer = BytesIO()
-
-    torchaudio.save(
-        audio_buffer,
-        audio,
-        sample_rate=44100,
-        format="wav",
-    )
-
-    audio_buffer.seek(0)
-
-    return StreamingResponse(
-        audio_buffer,
-        media_type="audio/wav",
-        headers={
-            "Content-Disposition": "inline; filename=creature.wav"
-        },
-    )
+def generate_name_from_image(image: Image.Image, type: str) -> str:
+    # Placeholder for image naming logic.
+    # In a real implementation, you would use an image naming model here.
+    return f"{type} Boy"
