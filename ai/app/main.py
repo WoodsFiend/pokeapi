@@ -7,6 +7,7 @@ import torch
 import torchaudio
 import os
 from diffusers import Flux2KleinPipeline
+from transformers import Blip2Processor, Blip2ForConditionalGeneration
 from PIL import Image
 from io import BytesIO
 import numpy as np
@@ -20,9 +21,12 @@ app = FastAPI(
     version="1.0.0",
 )
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
 image_model = None
 background_removal_model = None
 audio_model = None
+text_processor = None
+text_model = None
 
 class GenerateImageRequest(BaseModel):
     type: str
@@ -34,8 +38,10 @@ def setup():
     global image_model
     global background_removal_model
     global audio_model
+    global text_processor
+    global text_model
+    global device
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
     # Hugging Face token for private model access
@@ -59,16 +65,12 @@ def setup():
             "CPUExecutionProvider",
         ],
     )
-    print(
-        "Background removal providers:",
-        background_removal_model.get_providers(),
-    )
 
     # ----------------------------------------
     # Image Generation Model
     # ----------------------------------------
     IMAGE_GEN_MODEL = os.getenv(
-        "HF_MODEL",
+        "IMAGE_MODEL",
         "black-forest-labs/FLUX.2-klein-4B",
     )
     if device == "cuda":
@@ -98,6 +100,34 @@ def setup():
         "small-sfx",
     )
 
+    # ----------------------------------------
+    # Text Generation Model
+    # ----------------------------------------
+    TEXT_GEN_MODEL = os.getenv(
+        "TEXT_MODEL",
+        "Salesforce/blip2-opt-2.7b",
+    )
+
+    text_processor = Blip2Processor.from_pretrained(
+        TEXT_GEN_MODEL,
+        token=TOKEN,
+    )
+
+    if device == "cuda":
+        text_model = Blip2ForConditionalGeneration.from_pretrained(
+            TEXT_GEN_MODEL,
+            token=TOKEN,
+            torch_dtype=torch.float16,
+        )
+        text_model.to("cuda")
+    else:
+        text_model = Blip2ForConditionalGeneration.from_pretrained(
+            TEXT_GEN_MODEL,
+            token=TOKEN,
+            torch_dtype=torch.float32,
+        )
+        text_model.to("cpu")
+
 @app.on_event("startup")
 def startup():
     setup()
@@ -113,16 +143,19 @@ def generate(request: GenerateImageRequest):
     random_pokemon = get_random_pokemon_by_type(
         request.type
     )
-    image = generate_image_data(random_pokemon, request.type)
+    front_image = generate_image_data(random_pokemon, request.type)
+    
+    back_image = generate_back_image_data(front_image);
 
-    name = generate_name_from_image(
-        image,
+    description = generate_description_from_image(
+        front_image,
         request.type,
     )
 
-    description = generate_description_from_image(
-        image,
+    name = generate_name_from_image(
+        front_image,
         request.type,
+        description
     )
 
     audio = generate_audio_data(
@@ -131,38 +164,24 @@ def generate(request: GenerateImageRequest):
         )
     )
 
-    # Convert image to PNG bytes
-    image_buffer = BytesIO()
-    image.save(
-        image_buffer,
-        format="PNG",
-    )
+    # Get the pokemon data
+    pokemon_response = requests.get(random_pokemon["url"])
+    if pokemon_response.status_code != 200:
+        raise ValueError("Failed to fetch Pokemon data from PokeAPI")
+    pokemon_data = pokemon_response.json()
 
-    image_base64 = base64.b64encode(
-        image_buffer.getvalue()
-    ).decode("utf-8")
+    # Save the images to the pokeapi service and return the URL in the response
 
-    # Convert audio to WAV bytes
-    audio_buffer = BytesIO()
+    # Save the audio to the pokeapi service and return the URL in the response
 
-    torchaudio.save(
-        audio_buffer,
-        audio,
-        sample_rate=44100,
-        format="wav",
-    )
+    # Update the pokemon data with the new image/audio URLs, name and description
+    pokemon_data["name"] = name
+    pokemon_data["description"] = description
+    pokemon_data["sprites"]["front_default"] = f"some front url"
+    pokemon_data["sprites"]["back_default"] = f"some back url"
+    pokemon_data["cries"]["latest"] = f"some audio url"
 
-    audio_base64 = base64.b64encode(
-        audio_buffer.getvalue()
-    ).decode("utf-8")
-
-    return {
-        "pokemon": random_pokemon,
-        "image": image_base64,
-        "name": name,
-        "description": description,
-        "cry": audio_base64,
-    }
+    return pokemon_data
 
 @app.post("/generateImage")
 def generate_image(request: GenerateImageRequest):
@@ -241,9 +260,25 @@ def generate_image_data(random_pokemon: dict, type: str) -> Image.Image:
 
     return remove_background(generated_image)
 
-def generate_audio_data(
-    request: GenerateAudioRequest,
-) -> torch.Tensor:
+def generate_back_image_data(front_image: Image.Image) -> Image.Image:
+    prompt = (
+        f"Create a view of this creature from the back."
+    )
+
+    result = image_model(
+        prompt=prompt,
+        image=front_image,
+        height=512,
+        width=512,
+        guidance_scale=1.0,
+        num_inference_steps=4,
+    )
+
+    generated_image = result.images[0].convert("RGBA")
+
+    return remove_background(generated_image)
+
+def generate_audio_data(request: GenerateAudioRequest) -> torch.Tensor:
 
     prompt = (
         f"Create a completely original creature cry sound effect inspired by "
@@ -379,11 +414,49 @@ def remove_background(image: Image.Image) -> Image.Image:
     return result
 
 def generate_description_from_image(image: Image.Image, type: str) -> str:
-    # Placeholder for image captioning logic.
-    # In a real implementation, you would use an image captioning model here.
-    return f"A unique {type} creature."
+    description = generate_text(
+        image=image,
+        prompt=f"Describe a unique {type} creature in detail.",
+        max_new_tokens=100
+    )
+    return description
 
-def generate_name_from_image(image: Image.Image, type: str) -> str:
-    # Placeholder for image naming logic.
-    # In a real implementation, you would use an image naming model here.
-    return f"{type} Boy"
+def generate_name_from_image(image: Image.Image, type: str, description: str) -> str:
+    name = generate_text(
+        image=image,
+        prompt=f"Generate a unique name for a {type} creature. Description: {description}",
+        max_new_tokens=10
+    )
+    return name
+
+def generate_text(
+    image: Image.Image,
+    prompt: str,
+    max_new_tokens: int = 100,
+) -> str:
+
+    image = image.convert("RGB")
+
+    inputs = text_processor(
+        images=image,
+        text=prompt,
+        return_tensors="pt",
+    )
+
+    inputs = {
+        key: value.to(device)
+        for key, value in inputs.items()
+    }
+
+    with torch.no_grad():
+        generated_ids = text_model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=0.8,
+        )
+
+    return text_processor.batch_decode(
+        generated_ids,
+        skip_special_tokens=True,
+    )[0].strip()
