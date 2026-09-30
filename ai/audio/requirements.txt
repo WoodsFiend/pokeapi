@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+torch
+torchaudio
+accelerate
+git+https://github.com/Stability-AI/stable-audio-3.git

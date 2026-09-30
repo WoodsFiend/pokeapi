@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+python-multipart
+numpy
+pillow
+onnxruntime-gpu==1.22.0
+huggingface_hub

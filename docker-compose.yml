@@ -66,23 +66,118 @@ services:
       HASURA_GRAPHQL_UNAUTHORIZED_ROLE: anon
       HASURA_GRAPHQL_ENABLE_TELEMETRY: "false"
       # HASURA_GRAPHQL_CONSOLE_ASSETS_DIR: /srv/console-assets
+  audio-model:
+    build:
+      context: ./ai/audio
+    container_name: pokemon-ai-audio
+    env_file:
+      - ./ai/.env
+    gpus: all
+    environment:
+      HF_HOME: /cache/huggingface
+      CUDA_VISIBLE_DEVICES: ${AI_AUDIO_GPU:-0}
+    volumes:
+      - huggingface-cache:/cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30m
+
+  text-model:
+    build:
+      context: ./ai/text
+    container_name: pokemon-ai-text
+    env_file:
+      - ./ai/.env
+    gpus: all
+    environment:
+      HF_HOME: /cache/huggingface
+      CUDA_VISIBLE_DEVICES: ${AI_TEXT_GPU:-0}
+    volumes:
+      - huggingface-cache:/cache/huggingface
+    depends_on:
+      audio-model:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30m
+
+  image-model:
+    build:
+      context: ./ai/image
+    container_name: pokemon-ai-image
+    env_file:
+      - ./ai/.env
+    gpus: all
+    environment:
+      HF_HOME: /cache/huggingface
+      CUDA_VISIBLE_DEVICES: ${AI_IMAGE_GPU:-0}
+    volumes:
+      - huggingface-cache:/cache/huggingface
+    depends_on:
+      text-model:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30m
+
+  background-model:
+    build:
+      context: ./ai/background
+    container_name: pokemon-ai-background
+    env_file:
+      - ./ai/.env
+    gpus: all
+    environment:
+      HF_HOME: /cache/huggingface
+      CUDA_VISIBLE_DEVICES: ${AI_BACKGROUND_GPU:-0}
+    volumes:
+      - huggingface-cache:/cache/huggingface
+    depends_on:
+      image-model:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30m
+
   ai:
     build:
       context: ./ai
     container_name: pokemon-ai
     ports:
       - "8001:8000"
-    env_file:
-      - ./ai/.env
-    gpus: all
     environment:
-      - HF_HOME=/cache/huggingface
+      IMAGE_SERVICE_URL: http://image-model:8000
+      BACKGROUND_SERVICE_URL: http://background-model:8000
+      TEXT_SERVICE_URL: http://text-model:8000
+      AUDIO_SERVICE_URL: http://audio-model:8000
+      GENERATED_ASSET_DIR: /app/generated-assets
+      AI_PARALLEL_MODEL_CALLS: ${AI_PARALLEL_MODEL_CALLS:-false}
     volumes:
-      - huggingface-cache:/cache/huggingface
+      - generated-assets:/app/generated-assets
     depends_on:
-      - app
+      image-model:
+        condition: service_healthy
+      background-model:
+        condition: service_healthy
+      text-model:
+        condition: service_healthy
+      audio-model:
+        condition: service_healthy
 volumes:
   pg_data:
   redis_data:
   graphql_cache:
   huggingface-cache:
+  generated-assets:
