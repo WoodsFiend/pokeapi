@@ -1,6 +1,8 @@
 from io import BytesIO
+import logging
 import os
 import threading
+from time import perf_counter
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import Response
@@ -10,9 +12,12 @@ import torch
 
 
 app = FastAPI(title="Pokemon Image Model Service", version="1.0.0")
+logger = logging.getLogger("uvicorn.error")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 image_model = None
 inference_lock = threading.Lock()
+image_size = int(os.getenv("IMAGE_GENERATION_SIZE", "512"))
+inference_steps = int(os.getenv("IMAGE_INFERENCE_STEPS", "4"))
 
 
 def setup():
@@ -29,6 +34,10 @@ def setup():
     image_model.to(device)
     torch.set_grad_enabled(False)
     print(f"Image model ready on {device}: {model_name}")
+    print(
+        "Image generation settings: "
+        f"size={image_size}x{image_size}, steps={inference_steps}"
+    )
 
 
 @app.on_event("startup")
@@ -61,13 +70,18 @@ def generate_front(
     )
 
     with inference_lock, torch.inference_mode():
+        started = perf_counter()
         result = image_model(
             prompt=prompt,
             image=source_image,
-            height=512,
-            width=512,
+            height=image_size,
+            width=image_size,
             guidance_scale=1.0,
-            num_inference_steps=4,
+            num_inference_steps=inference_steps,
+        )
+        logger.info(
+            "image timing mode=front inference_seconds=%.2f",
+            perf_counter() - started,
         )
         generated_image = result.images[0].convert("RGBA")
     return image_response(generated_image)
@@ -77,13 +91,18 @@ def generate_front(
 def generate_back(image: UploadFile = File(...)):
     front_image = Image.open(BytesIO(image.file.read())).convert("RGBA")
     with inference_lock, torch.inference_mode():
+        started = perf_counter()
         result = image_model(
             prompt="Create a view of this creature from the back.",
             image=front_image,
-            height=512,
-            width=512,
+            height=image_size,
+            width=image_size,
             guidance_scale=1.0,
-            num_inference_steps=4,
+            num_inference_steps=inference_steps,
+        )
+        logger.info(
+            "image timing mode=back inference_seconds=%.2f",
+            perf_counter() - started,
         )
         generated_image = result.images[0].convert("RGBA")
     return image_response(generated_image)

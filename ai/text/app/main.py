@@ -1,7 +1,9 @@
 from io import BytesIO
 import json
+import logging
 import os
 import threading
+from time import perf_counter
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from PIL import Image
@@ -17,6 +19,7 @@ app = FastAPI(
     title="Pokemon Text Model Service",
     version="1.0.0",
 )
+logger = logging.getLogger("uvicorn.error")
 
 
 # ----------------------------------------
@@ -43,7 +46,7 @@ def setup():
 
     model_name = os.getenv(
         "TEXT_MODEL",
-        "Qwen/Qwen2.5-VL-7B-Instruct",
+        "Qwen/Qwen2.5-VL-3B-Instruct",
     )
 
     print(f"Loading text model: {model_name}")
@@ -145,6 +148,7 @@ def generate_text(
     else:
         inputs = inputs.to("cpu")
 
+    generation_started = perf_counter()
     with torch.inference_mode():
 
         generated_ids = text_model.generate(
@@ -152,6 +156,11 @@ def generate_text(
             max_new_tokens=max_new_tokens,
             do_sample=False,
         )
+    logger.info(
+        "text timing stage=model_generate elapsed_seconds=%.2f output_tokens=%d",
+        perf_counter() - generation_started,
+        generated_ids.shape[-1] - inputs["input_ids"].shape[-1],
+    )
 
     # Remove the input tokens so we only return
     # the newly generated response.

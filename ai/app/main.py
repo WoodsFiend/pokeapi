@@ -1,8 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+import logging
 import os
 from pathlib import Path
 import random
+from time import perf_counter
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -15,6 +17,7 @@ app = FastAPI(
     title="Pokemon AI Service",
     version="1.0.0",
 )
+logger = logging.getLogger("uvicorn.error")
 
 IMAGE_SERVICE_URL = os.getenv("IMAGE_SERVICE_URL", "http://image-model:8000")
 BACKGROUND_SERVICE_URL = os.getenv(
@@ -47,10 +50,21 @@ def health():
 
 @app.post("/generate")
 def generate(request: Request, body: GenerateImageRequest):
-    random_pokemon = get_random_pokemon_by_type(body.type)
-    pokemon_data, source_image = get_pokemon_and_image(random_pokemon["url"])
+    started = perf_counter()
+    random_pokemon = _timed(
+        "pokemon_type_lookup",
+        get_random_pokemon_by_type,
+        body.type,
+    )
+    pokemon_data, source_image = _timed(
+        "pokemon_and_sprite_fetch",
+        get_pokemon_and_image,
+        random_pokemon["url"],
+    )
 
-    front_image = generate_front_image(
+    front_image = _timed(
+        "front_image_and_background_removal",
+        generate_front_image,
         source_image,
         random_pokemon["name"],
         body.type,
@@ -58,16 +72,39 @@ def generate(request: Request, body: GenerateImageRequest):
 
     if PARALLEL_MODEL_CALLS:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            back_future = executor.submit(generate_back_image, front_image)
-            text_future = executor.submit(generate_creature_text, front_image)
+            back_future = executor.submit(
+                _timed,
+                "back_image_and_background_removal",
+                generate_back_image,
+                front_image,
+            )
+            text_future = executor.submit(
+                _timed,
+                "text_generation",
+                generate_creature_text,
+                front_image,
+            )
             name, description = text_future.result()
-            audio_future = executor.submit(generate_audio, description)
+            audio_future = executor.submit(
+                _timed,
+                "audio_generation",
+                generate_audio,
+                description,
+            )
             back_image = back_future.result()
             audio = audio_future.result()
     else:
-        back_image = generate_back_image(front_image)
-        name, description = generate_creature_text(front_image)
-        audio = generate_audio(description)
+        back_image = _timed(
+            "back_image_and_background_removal",
+            generate_back_image,
+            front_image,
+        )
+        name, description = _timed(
+            "text_generation",
+            generate_creature_text,
+            front_image,
+        )
+        audio = _timed("audio_generation", generate_audio, description)
 
     GENERATED_ASSET_DIR.mkdir(parents=True, exist_ok=True)
     asset_id = uuid4().hex
@@ -77,6 +114,10 @@ def generate(request: Request, body: GenerateImageRequest):
     (GENERATED_ASSET_DIR / front_filename).write_bytes(front_image)
     (GENERATED_ASSET_DIR / back_filename).write_bytes(back_image)
     (GENERATED_ASSET_DIR / audio_filename).write_bytes(audio)
+    logger.info(
+        "ai timing stage=generate_total elapsed_seconds=%.2f",
+        perf_counter() - started,
+    )
 
     public_base_url = os.getenv(
         "PUBLIC_BASE_URL",
@@ -175,9 +216,23 @@ def _service_response(response: requests.Response, service_name: str) -> bytes:
     return response.content
 
 
+def _timed(stage: str, operation, *args, **kwargs):
+    started = perf_counter()
+    try:
+        return operation(*args, **kwargs)
+    finally:
+        logger.info(
+            "ai timing stage=%s elapsed_seconds=%.2f",
+            stage,
+            perf_counter() - started,
+        )
+
+
 def generate_front_image(source_image: bytes, name: str, pokemon_type: str) -> bytes:
     try:
-        response = requests.post(
+        response = _timed(
+            "image_front_service",
+            requests.post,
             f"{IMAGE_SERVICE_URL}/generate/front",
             data={"name": name, "pokemon_type": pokemon_type},
             files={"image": ("source.png", source_image, "image/png")},
@@ -186,12 +241,18 @@ def generate_front_image(source_image: bytes, name: str, pokemon_type: str) -> b
     except requests.RequestException as error:
         raise HTTPException(status_code=502, detail="Image service is unavailable") from error
     generated_image = _service_response(response, "Image")
-    return remove_image_background(generated_image)
+    return _timed(
+        "background_removal_front",
+        remove_image_background,
+        generated_image,
+    )
 
 
 def generate_back_image(front_image: bytes) -> bytes:
     try:
-        response = requests.post(
+        response = _timed(
+            "image_back_service",
+            requests.post,
             f"{IMAGE_SERVICE_URL}/generate/back",
             files={"image": ("front.png", front_image, "image/png")},
             timeout=1200,
@@ -199,7 +260,11 @@ def generate_back_image(front_image: bytes) -> bytes:
     except requests.RequestException as error:
         raise HTTPException(status_code=502, detail="Image service is unavailable") from error
     generated_image = _service_response(response, "Image")
-    return remove_image_background(generated_image)
+    return _timed(
+        "background_removal_back",
+        remove_image_background,
+        generated_image,
+    )
 
 
 def remove_image_background(image: bytes) -> bytes:
