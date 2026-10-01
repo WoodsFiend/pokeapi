@@ -202,7 +202,7 @@ two string fields: "name" and "description".
 
 Requirements for name:
 - Create a unique fantasy creature name.
-- Use 1 or 2 words maximum; make it easy to pronounce.
+- Use 1 word maximum; make it easy to pronounce.
 - Do not reuse an existing Pokemon name.
 
 Requirements for description:
