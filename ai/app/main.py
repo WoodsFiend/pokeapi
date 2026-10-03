@@ -241,6 +241,7 @@ def generate_front_image(source_image: bytes, name: str, pokemon_type: str) -> b
     except requests.RequestException as error:
         raise HTTPException(status_code=502, detail="Image service is unavailable") from error
     generated_image = _service_response(response, "Image")
+
     return _timed(
         "background_removal_front",
         remove_image_background,
@@ -260,6 +261,7 @@ def generate_back_image(front_image: bytes) -> bytes:
     except requests.RequestException as error:
         raise HTTPException(status_code=502, detail="Image service is unavailable") from error
     generated_image = _service_response(response, "Image")
+
     return _timed(
         "background_removal_back",
         remove_image_background,
