@@ -68,6 +68,27 @@ NAME_STYLES = [
     "magical and easy to pronounce",
 ]
 
+POKEMON_TYPE_COLORS: dict[str, list[str]] = {
+    "normal": ["cream", "warm beige", "soft brown", "light gray"],
+    "fire": ["scarlet red", "flame orange"],
+    "water": ["ocean blue", "cyan", "deep teal"],
+    "electric": ["bright yellow", "electric blue"],
+    "grass": ["leaf green", "lime green", "olive"],
+    "ice": ["ice blue", "white", "pale cyan"],
+    "fighting": ["crimson", "warm brown", "orange"],
+    "poison": ["violet", "magenta", "acid green"],
+    "ground": ["ochre", "sand", "terracotta"],
+    "flying": ["sky blue", "white", "silver", "black", "gray", "brown"],
+    "psychic": ["hot pink", "violet", "indigo"],
+    "bug": ["lime green", "amber", "dark brown"],
+    "rock": ["slate gray", "stone beige", "rust brown"],
+    "ghost": ["lavender", "indigo", "pale blue"],
+    "dragon": ["royal purple", "teal", "gold"],
+    "dark": ["black", "charcoal", "deep purple"],
+    "steel": ["silver", "gunmetal gray", "blue gray"],
+    "fairy": ["pastel pink", "lavender", "soft blue"],
+}
+
 class GenerateImageRequest(BaseModel):
     type: str
 
@@ -371,6 +392,34 @@ def build_front_image_prompt(
     pokemon_types: list[str],
 ) -> str:
     types = ", ".join(pokemon_types)
+    type_palettes = [
+        (
+            pokemon_type,
+            POKEMON_TYPE_COLORS.get(
+                pokemon_type.lower(),
+                ["neutral gray", "cream"],
+            ),
+        )
+        for pokemon_type in pokemon_types
+    ]
+
+    if type_palettes:
+        primary_type, primary_colors = type_palettes[0]
+        color_guidance = (
+            f"- Primary colors: use the {primary_type} palette "
+            f"({', '.join(primary_colors)}) as the creature's dominant colors."
+        )
+        if len(type_palettes) > 1:
+            secondary_palettes = "; ".join(
+                f"{pokemon_type}: {', '.join(colors)}"
+                for pokemon_type, colors in type_palettes[1:]
+            )
+            color_guidance += (
+                "\n- Secondary colors: use these palettes as smaller accents, "
+                f"keeping the primary palette dominant: {secondary_palettes}."
+            )
+    else:
+        color_guidance = "- Use a balanced, cohesive natural color palette."
 
     return f"""Create an original fantasy creature named {name}.
 
@@ -378,6 +427,9 @@ def build_front_image_prompt(
 
     Creature description:
     {description}
+
+    TYPE-BASED COLOR PALETTE:
+    {color_guidance}
 
     Use the creature description as the primary visual design reference. The creature's appearance, physical features, colors, proportions, and distinctive characteristics should clearly reflect the description and its type combination.
 
