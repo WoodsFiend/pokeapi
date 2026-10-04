@@ -3,6 +3,7 @@ from io import BytesIO
 import logging
 import os
 from pathlib import Path
+import types
 import random
 from time import perf_counter
 from uuid import uuid4
@@ -34,6 +35,38 @@ GENERATED_ASSET_DIR = Path(
     os.getenv("GENERATED_ASSET_DIR", "/app/generated-assets")
 )
 
+DESCRIPTION_TONES = [
+    "whimsical",
+    "mysterious",
+    "playful",
+    "dramatic",
+    "charming",
+    "curious",
+    "lighthearted",
+    "adventurous",
+]
+DESCRIPTION_FOCUSES = [ 
+    "its distinctive physical appearance", 
+    "its personality and temperament", 
+    "how it behaves in the wild", 
+    "its unusual habits", 
+    "how it interacts with other creatures", 
+    "its preferred habitat and lifestyle", 
+    "a distinctive physical feature", 
+    "a curious behavior it is known for", 
+]
+NAME_STYLES = [ 
+    "cute and playful", 
+    "mysterious and fantastical", 
+    "short and energetic", 
+    "whimsical and unusual", 
+    "ancient and mythical", 
+    "quirky and memorable", 
+    "a clever combination of concepts related to the creature", 
+    "soft and friendly", 
+    "wild and intimidating", 
+    "magical and easy to pronounce",
+]
 
 class GenerateImageRequest(BaseModel):
     type: str
@@ -47,7 +80,6 @@ class GenerateAudioRequest(BaseModel):
 def health():
     return {"status": "ok"}
 
-
 @app.post("/generate")
 def generate(request: Request, body: GenerateImageRequest):
     started = perf_counter()
@@ -56,53 +88,60 @@ def generate(request: Request, body: GenerateImageRequest):
         get_random_pokemon_by_type,
         body.type,
     )
-    pokemon_data, source_image = _timed(
-        "pokemon_and_sprite_fetch",
-        get_pokemon_and_image,
+    pokemon_data = _timed(
+        "pokemon_data_fetch",
+        get_pokemon_data,
         random_pokemon["url"],
     )
+    pokemon_types = get_pokemon_types(pokemon_data) or [body.type]
 
-    front_image = _timed(
-        "front_image_and_background_removal",
-        generate_front_image,
-        source_image,
-        random_pokemon["name"],
-        body.type,
+    name, description = _timed(
+        "text_generation",
+        generate_creature_text,
+        pokemon_types,
     )
+    front_prompt = build_front_image_prompt(
+        name,
+        description,
+        pokemon_types,
+    )
+    back_prompt = build_back_image_prompt(name, description)
 
     if PARALLEL_MODEL_CALLS:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            back_future = executor.submit(
+            front_future = executor.submit(
                 _timed,
-                "back_image_and_background_removal",
-                generate_back_image,
-                front_image,
+                "front_image_generation_and_background_removal",
+                generate_front_image,
+                front_prompt,
             )
-            text_future = executor.submit(
-                _timed,
-                "text_generation",
-                generate_creature_text,
-                front_image,
-            )
-            name, description = text_future.result()
             audio_future = executor.submit(
                 _timed,
                 "audio_generation",
                 generate_audio,
                 description,
             )
+            front_image = front_future.result()
+            back_future = executor.submit(
+                _timed,
+                "back_image_and_background_removal",
+                generate_back_image,
+                front_image,
+                back_prompt,
+            )
             back_image = back_future.result()
             audio = audio_future.result()
     else:
+        front_image = _timed(
+            "front_image_generation_and_background_removal",
+            generate_front_image,
+            front_prompt,
+        )
         back_image = _timed(
             "back_image_and_background_removal",
             generate_back_image,
             front_image,
-        )
-        name, description = _timed(
-            "text_generation",
-            generate_creature_text,
-            front_image,
+            back_prompt,
         )
         audio = _timed("audio_generation", generate_audio, description)
 
@@ -136,7 +175,6 @@ def generate(request: Request, body: GenerateImageRequest):
     )
     return pokemon_data
 
-
 @app.get("/generated/{filename}")
 def get_generated_asset(filename: str):
     asset_path = (GENERATED_ASSET_DIR / filename).resolve()
@@ -151,18 +189,22 @@ def get_generated_asset(filename: str):
         content_disposition_type="inline",
     )
 
-
 @app.post("/generateImage")
 def generate_image(body: GenerateImageRequest):
     random_pokemon = get_random_pokemon_by_type(body.type)
-    _, source_image = get_pokemon_and_image(random_pokemon["url"])
-    image = generate_front_image(
-        source_image,
-        random_pokemon["name"],
-        body.type,
+    pokemon_data = get_pokemon_data(random_pokemon["url"])
+    pokemon_types = get_pokemon_types(pokemon_data) or [body.type]
+    name, description = generate_creature_text(
+        pokemon_types,
     )
+    print(f"Generated creature: {name} - {description}")
+    prompt = build_front_image_prompt(
+        name,
+        description,
+        pokemon_types,
+    )
+    image = generate_front_image(prompt)
     return StreamingResponse(BytesIO(image), media_type="image/png")
-
 
 @app.post("/generateCry")
 def generate_cry(body: GenerateAudioRequest):
@@ -172,7 +214,6 @@ def generate_cry(body: GenerateAudioRequest):
         media_type="audio/wav",
         headers={"Content-Disposition": "inline; filename=creature.wav"},
     )
-
 
 def get_random_pokemon_by_type(pokemon_type: str) -> dict:
     response = requests.get(
@@ -190,22 +231,18 @@ def get_random_pokemon_by_type(pokemon_type: str) -> dict:
         )
     return random.choice(pokemon_entries)["pokemon"]
 
-
-def get_pokemon_and_image(pokemon_url: str) -> tuple[dict, bytes]:
+def get_pokemon_data(pokemon_url: str) -> dict:
     pokemon_response = requests.get(pokemon_url, timeout=30)
     if pokemon_response.status_code != 200:
         raise HTTPException(status_code=502, detail="Failed to fetch Pokemon data")
+    return pokemon_response.json()
 
-    pokemon_data = pokemon_response.json()
-    image_url = pokemon_data.get("sprites", {}).get("front_default")
-    if not image_url:
-        raise HTTPException(status_code=404, detail="Pokemon has no front sprite")
-
-    image_response = requests.get(image_url, timeout=30)
-    if image_response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch Pokemon sprite")
-    return pokemon_data, image_response.content
-
+def get_pokemon_types(pokemon_data: dict) -> list[str]:
+    return [
+        entry["type"]["name"]
+        for entry in pokemon_data.get("types", [])
+        if entry.get("type", {}).get("name")
+    ]
 
 def _service_response(response: requests.Response, service_name: str) -> bytes:
     if response.status_code >= 400:
@@ -214,7 +251,6 @@ def _service_response(response: requests.Response, service_name: str) -> bytes:
             detail=f"{service_name} service returned HTTP {response.status_code}",
         )
     return response.content
-
 
 def _timed(stage: str, operation, *args, **kwargs):
     started = perf_counter()
@@ -227,15 +263,13 @@ def _timed(stage: str, operation, *args, **kwargs):
             perf_counter() - started,
         )
 
-
-def generate_front_image(source_image: bytes, name: str, pokemon_type: str) -> bytes:
+def generate_front_image(prompt: str) -> bytes:
     try:
         response = _timed(
             "image_front_service",
             requests.post,
             f"{IMAGE_SERVICE_URL}/generate/front",
-            data={"name": name, "pokemon_type": pokemon_type},
-            files={"image": ("source.png", source_image, "image/png")},
+            json={"prompt": prompt},
             timeout=1200,
         )
     except requests.RequestException as error:
@@ -248,13 +282,13 @@ def generate_front_image(source_image: bytes, name: str, pokemon_type: str) -> b
         generated_image,
     )
 
-
-def generate_back_image(front_image: bytes) -> bytes:
+def generate_back_image(front_image: bytes, prompt: str) -> bytes:
     try:
         response = _timed(
             "image_back_service",
             requests.post,
             f"{IMAGE_SERVICE_URL}/generate/back",
+            data={"prompt": prompt},
             files={"image": ("front.png", front_image, "image/png")},
             timeout=1200,
         )
@@ -267,7 +301,6 @@ def generate_back_image(front_image: bytes) -> bytes:
         remove_image_background,
         generated_image,
     )
-
 
 def remove_image_background(image: bytes) -> bytes:
     try:
@@ -283,12 +316,14 @@ def remove_image_background(image: bytes) -> bytes:
         ) from error
     return _service_response(response, "Background removal")
 
-
-def generate_creature_text(image: bytes) -> tuple[str, str]:
+def generate_creature_text(
+    pokemon_types: list[str],
+) -> tuple[str, str]:
+    prompt = build_name_description_prompt(pokemon_types)
     try:
         response = requests.post(
             f"{TEXT_SERVICE_URL}/generate",
-            files={"image": ("creature.png", image, "image/png")},
+            json={"prompt": prompt},
             timeout=600,
         )
     except requests.RequestException as error:
@@ -297,6 +332,111 @@ def generate_creature_text(image: bytes) -> tuple[str, str]:
     generated_text = response.json()
     return generated_text["name"], generated_text["description"]
 
+def build_name_description_prompt( pokemon_types: list[str], 
+) -> str: 
+    types = ", ".join(pokemon_types) 
+    name_style = random.choice(NAME_STYLES) 
+    description_tone = random.choice(DESCRIPTION_TONES) 
+    description_focus = random.choice(DESCRIPTION_FOCUSES) 
+    return f"""Create an original fantasy creature inspired by these types: {types}. 
+    Return exactly one JSON object with exactly two string fields: "name" "description" 
+    NAME REQUIREMENTS: 
+    - One word only. 
+    - 3-12 letters. 
+    - Easy to pronounce and remember. 
+    - Original and distinctive. 
+    - Do not use an existing famous character, creature, or franchise name. 
+    - Do not use numbers, spaces, hyphens, apostrophes, or punctuation. 
+    - The naming style should be {name_style}. 
+    - The name should feel appropriate for a creature with these types: {types}. 
+    DESCRIPTION REQUIREMENTS: 
+    - Exactly 1 or 2 sentences. 
+    - Write like an official fantasy creature encyclopedia entry. 
+    - Describe the creature's visible appearance, personality, and behavior. 
+    - Focus particularly on {description_focus}. 
+    - Include at least one distinctive or memorable characteristic. 
+    - Be specific and imaginative rather than generic. 
+    - Use a {description_tone} tone. 
+    - Do not mention Pokémon, Pokemon, AI, image generation, prompts, or these instructions. 
+    OUTPUT REQUIREMENTS: 
+    - Return valid JSON only. 
+    - Do not use Markdown or code fences. 
+    - Do not include explanations or commentary. 
+    - Do not include any fields other than "name" and "description". 
+    Example: {{"name":"ExampleName","description":"A small creature with..."}}"""
+
+def build_front_image_prompt(
+    name: str,
+    description: str,
+    pokemon_types: list[str],
+) -> str:
+    types = ", ".join(pokemon_types)
+
+    return f"""Create an original fantasy creature named {name}.
+
+    Creature types: {types}
+
+    Creature description:
+    {description}
+
+    Use the creature description as the primary visual design reference. The creature's appearance, physical features, colors, proportions, and distinctive characteristics should clearly reflect the description and its type combination.
+
+    Create a unique creature design rather than a generic animal or a simple representation of its types.
+
+    RENDERING:
+    - Full-body front-facing view.
+    - The creature faces directly toward the camera.
+    - Show the entire creature from the top of its head to the bottom of its feet.
+    - One creature only.
+    - Centered composition.
+    - Clear, readable silhouette.
+    - Pixel art video game sprite style.
+    - Clean, crisp shapes and clearly defined features.
+    - Plain solid white background.
+
+    COMPOSITION:
+    - Creature fully visible and entirely inside the image.
+    - Leave a small amount of white space around the creature.
+    - No cropping.
+    - No environment or scenery.
+    - No ground plane.
+
+    DO NOT INCLUDE:
+    - Shadows.
+    - Reflections.
+    - Text.
+    - Logos.
+    - Multiple creatures.
+    - Additional objects.
+    - Background elements.
+    - UI elements."""
+
+def build_back_image_prompt(name: str, description: str) -> str:
+    return f"""Use the supplied front image as the identity reference for the same creature.
+
+CAMERA AND ORIENTATION ARE CRITICAL:
+The camera is positioned directly behind the creature. The creature is facing exactly 180 degrees away from the camera. Show a direct rear view of the creature's back, with the creature's central body axis aligned straight toward the background.
+
+The creature must NOT face the camera.
+
+- Full-body rear view.
+- Back completely visible.
+- Face completely hidden.
+- No eyes, mouth, nose, or facial features visible.
+- No head turned toward the camera.
+- No looking over its shoulder.
+- No side angle.
+- No three-quarter angle.
+- No front-facing pose.
+- No profile view.
+- Preserve the creature's identity, proportions, colors, markings, accessories, and distinctive physical characteristics from the reference image.
+- Pixel-art video game sprite style.
+- Centered composition.
+- Plain solid white background.
+- No ground plane.
+- No shadows or reflections.
+- No text or logos.
+- No other objects or characters."""
 
 def generate_audio(description: str) -> bytes:
     try:

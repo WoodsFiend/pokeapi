@@ -8,6 +8,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import Response
 from diffusers import Flux2KleinPipeline
 from PIL import Image
+from pydantic import BaseModel, Field
 import torch
 
 
@@ -18,6 +19,11 @@ image_model = None
 inference_lock = threading.Lock()
 image_size = int(os.getenv("IMAGE_GENERATION_SIZE", "512"))
 inference_steps = int(os.getenv("IMAGE_INFERENCE_STEPS", "4"))
+
+
+class GenerateFrontRequest(BaseModel):
+    prompt: str = Field(min_length=1)
+
 
 def setup():
     global image_model
@@ -41,7 +47,7 @@ def setup():
     image_model = Flux2KleinPipeline.from_pretrained(
         model_name,
         token=token,
-        dtype=dtype,
+        torch_dtype=dtype,
     )
 
     image_model.load_lora_weights(
@@ -49,6 +55,24 @@ def setup():
     )
 
     image_model.to(device)
+
+    logger.info(
+        "CUDA: %s | GPU: %s",
+        torch.cuda.is_available(),
+        torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none",
+    )
+
+    logger.info(
+        "Transformer device=%s dtype=%s",
+        next(image_model.transformer.parameters()).device,
+        next(image_model.transformer.parameters()).dtype,
+    )
+
+    logger.info(
+        "VAE device=%s dtype=%s",
+        next(image_model.vae.parameters()).device,
+        next(image_model.vae.parameters()).dtype,
+    )
 
     adapter = image_model.get_active_adapters()[0]
     image_model.set_adapters(
@@ -60,7 +84,7 @@ def setup():
         try:
             image_model.transformer = torch.compile(
                 image_model.transformer,
-                mode="max-autotune",
+                mode="reduce-overhead",
                 fullgraph=False,
             )
             print("Transformer torch.compile enabled")
@@ -91,29 +115,13 @@ def health():
 
 
 @app.post("/generate/front")
-def generate_front(
-    name: str = Form(...),
-    pokemon_type: str = Form(...),
-    image: UploadFile = File(...),
-):
-    source_image = Image.open(BytesIO(image.file.read())).convert("RGB")
-    prompt = (
-        f"Create a completely original creature inspired by the visual "
-        f"characteristics of {name}. "
-        f"The creature should be a {pokemon_type}-type fantasy creature. "
-        "Do not copy the original creature exactly. "
-        "Do not include shadows or reflections. "
-        "Do not include any text or logos. "
-        "pixel art sprite, game asset, white background"
-    )
-
+def generate_front(body: GenerateFrontRequest):
     with inference_lock, torch.inference_mode():
         if device == "cuda":
             torch.cuda.synchronize()
         started = perf_counter()
         result = image_model(
-            prompt=prompt,
-            image=source_image,
+            prompt=body.prompt,
             height=image_size,
             width=image_size,
             guidance_scale=1.0,
@@ -132,16 +140,17 @@ def generate_front(
 
 
 @app.post("/generate/back")
-def generate_back(image: UploadFile = File(...)):
+def generate_back(
+    image: UploadFile = File(...),
+    prompt: str = Form(..., min_length=1),
+):
     front_image = Image.open(BytesIO(image.file.read())).convert("RGBA")
     with inference_lock, torch.inference_mode():
         if device == "cuda":
             torch.cuda.synchronize()
         started = perf_counter()
         result = image_model(
-            prompt=(
-                "pixel art sprite, game asset, white background, back view of the same creature, creature facing away from the camera, preserve its colors"
-            ),
+            prompt=prompt,
             image=front_image,
             height=image_size,
             width=image_size,
