@@ -26,8 +26,15 @@ def startup():
         filename="onnx/model_fp16.onnx",
         token=os.getenv("HF_TOKEN"),
     )
+
+    # --- Optimization 2: Tuned ONNX Session Options ---
+    opts = ort.SessionOptions()
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    opts.enable_cpu_mem_arena = True
+
     background_removal_model = ort.InferenceSession(
         model_path,
+        session_options=opts,
         providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
     print("Background removal model ready")
@@ -53,7 +60,7 @@ def apply_background_mask(image: Image.Image) -> Image.Image:
     original_size = image.size
     input_image = image.convert("RGB").resize(
         (512, 512),
-        Image.Resampling.LANCZOS,
+        Image.Resampling.BILINEAR,
     )
     image_array = np.asarray(input_image, dtype=np.float32) / 255.0
     image_array = np.transpose(image_array, (2, 0, 1))

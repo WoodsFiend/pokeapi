@@ -3,10 +3,11 @@ import logging
 import os
 import threading
 from time import perf_counter
+from transformers import BitsAndBytesConfig, AutoModelForCausalLM
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import Response
-from diffusers import Flux2KleinPipeline
+from diffusers import Flux2KleinPipeline, Flux2Transformer2DModel 
 from PIL import Image
 from pydantic import BaseModel, Field
 import torch
@@ -44,10 +45,46 @@ def setup():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
+    # 1. Configure 4-bit/8-bit Quantization Config
+    # Using 4-bit NF4 configuration for maximum VRAM savings
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True
+    )
+
+    logger.info("Loading quantized components with Flash Attention 2...")
+
+    # 2. Load individual subcomponents with Flash Attention and Quantization
+    # Load Transformer Block
+    transformer = Flux2Transformer2DModel.from_pretrained(
+        model_name,
+        subfolder="transformer",
+        quantization_config=quantization_config,
+        dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+        device_map=device
+    )
+
+    # Load Text Encoder (Ensure the subfolder matches your specific model topology)
+    text_encoder = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        subfolder="text_encoder",
+        quantization_config=quantization_config,
+        dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+        device_map=device
+    )
+
+    # 3. Assemble the Pipeline
+    # We pass the pre-loaded components to prevent the pipeline from loading full precision weights first
     image_model = Flux2KleinPipeline.from_pretrained(
         model_name,
-        token=token,
-        torch_dtype=dtype,
+        transformer=transformer,
+        text_encoder=text_encoder,
+        dtype=torch.bfloat16,
+        device_map=device
     )
 
     image_model.load_lora_weights(
