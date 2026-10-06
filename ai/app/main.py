@@ -23,7 +23,7 @@ logger = logging.getLogger("uvicorn.error")
 IMAGE_SERVICE_URL = os.getenv("IMAGE_SERVICE_URL", "http://image-model:8000")
 BACKGROUND_SERVICE_URL = os.getenv(
     "BACKGROUND_SERVICE_URL",
-    "http://background-model:8000",
+    "http://background-removal-model:8000",
 )
 TEXT_SERVICE_URL = os.getenv("TEXT_SERVICE_URL", "http://text-model:8000")
 AUDIO_SERVICE_URL = os.getenv("AUDIO_SERVICE_URL", "http://audio-model:8000")

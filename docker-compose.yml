@@ -68,8 +68,8 @@ services:
       # HASURA_GRAPHQL_CONSOLE_ASSETS_DIR: /srv/console-assets
   audio-model:
     build:
-      context: ./ai/audio
-    container_name: pokemon-ai-audio
+      context: ./ai/audio-generation
+    container_name: ai-audio-generation
     env_file:
       - ./ai/.env
     gpus: all
@@ -84,11 +84,12 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30m
+    restart: always
 
   text-model:
     build:
-      context: ./ai/text
-    container_name: pokemon-ai-text
+      context: ./ai/text-generation
+    container_name: ai-text-generation
     env_file:
       - ./ai/.env
     gpus: all
@@ -106,11 +107,12 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30m
-
+    restart: always
+    
   image-model:
     build:
-      context: ./ai/image
-    container_name: pokemon-ai-image
+      context: ./ai/image-generation
+    container_name: ai-image-generation
     env_file:
       - ./ai/.env
     gpus: all
@@ -128,11 +130,12 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30m
+    restart: always
 
-  background-model:
+  background-removal-model:
     build:
-      context: ./ai/background
-    container_name: pokemon-ai-background
+      context: ./ai/background-removal
+    container_name: ai-background-removal
     env_file:
       - ./ai/.env
     gpus: all
@@ -150,16 +153,17 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30m
+    restart: always
 
-  ai:
+  ai-app:
     build:
-      context: ./ai
-    container_name: pokemon-ai
+      context: ./ai/app
+    container_name: ai-app
     ports:
       - "8001:8000"
     environment:
       IMAGE_SERVICE_URL: http://image-model:8000
-      BACKGROUND_SERVICE_URL: http://background-model:8000
+      BACKGROUND_SERVICE_URL: http://background-removal-model:8000
       TEXT_SERVICE_URL: http://text-model:8000
       AUDIO_SERVICE_URL: http://audio-model:8000
       GENERATED_ASSET_DIR: /app/generated-assets
@@ -169,12 +173,20 @@ services:
     depends_on:
       image-model:
         condition: service_healthy
-      background-model:
+      background-removal-model:
         condition: service_healthy
       text-model:
         condition: service_healthy
       audio-model:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30m
+    restart: always
+
 volumes:
   pg_data:
   redis_data:
