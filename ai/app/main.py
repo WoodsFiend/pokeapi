@@ -4,7 +4,6 @@ import logging
 import os
 from pathlib import Path
 import types
-import random
 from time import perf_counter
 from uuid import uuid4
 
@@ -12,6 +11,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 import requests
+
+from random_choices import (
+    get_description_focus,
+    get_description_tone,
+    get_name_style,
+    get_pokemon_type_body_plan,
+    get_pokemon_type_colors,
+    get_random_pokemon,
+)
 
 
 app = FastAPI(
@@ -34,60 +42,6 @@ PARALLEL_MODEL_CALLS = os.getenv(
 GENERATED_ASSET_DIR = Path(
     os.getenv("GENERATED_ASSET_DIR", "/app/generated-assets")
 )
-
-DESCRIPTION_TONES = [
-    "whimsical",
-    "mysterious",
-    "playful",
-    "dramatic",
-    "charming",
-    "curious",
-    "lighthearted",
-    "adventurous",
-]
-DESCRIPTION_FOCUSES = [ 
-    "its distinctive physical appearance", 
-    "its personality and temperament", 
-    "how it behaves in the wild", 
-    "its unusual habits", 
-    "how it interacts with other creatures", 
-    "its preferred habitat and lifestyle", 
-    "a distinctive physical feature", 
-    "a curious behavior it is known for", 
-]
-NAME_STYLES = [ 
-    "cute and playful", 
-    "mysterious and fantastical", 
-    "short and energetic", 
-    "whimsical and unusual", 
-    "ancient and mythical", 
-    "quirky and memorable", 
-    "a clever combination of concepts related to the creature", 
-    "soft and friendly", 
-    "wild and intimidating", 
-    "magical and easy to pronounce",
-]
-
-POKEMON_TYPE_COLORS: dict[str, list[str]] = {
-    "normal": ["cream", "warm beige", "soft brown", "light gray"],
-    "fire": ["scarlet red", "flame orange"],
-    "water": ["ocean blue", "cyan", "deep teal"],
-    "electric": ["bright yellow", "electric blue"],
-    "grass": ["leaf green", "lime green", "olive"],
-    "ice": ["ice blue", "white", "pale cyan"],
-    "fighting": ["crimson", "warm brown", "orange"],
-    "poison": ["violet", "magenta", "acid green"],
-    "ground": ["ochre", "sand", "terracotta"],
-    "flying": ["sky blue", "white", "silver", "black", "gray", "brown"],
-    "psychic": ["hot pink", "violet", "indigo"],
-    "bug": ["lime green", "amber", "dark brown"],
-    "rock": ["slate gray", "stone beige", "rust brown"],
-    "ghost": ["lavender", "indigo", "pale blue"],
-    "dragon": ["royal purple", "teal", "gold"],
-    "dark": ["black", "charcoal", "deep purple"],
-    "steel": ["silver", "gunmetal gray", "blue gray"],
-    "fairy": ["pastel pink", "lavender", "soft blue"],
-}
 
 class GenerateImageRequest(BaseModel):
     type: str
@@ -115,16 +69,19 @@ def generate(request: Request, body: GenerateImageRequest):
         random_pokemon["url"],
     )
     pokemon_types = get_pokemon_types(pokemon_data) or [body.type]
+    body_plan = get_pokemon_type_body_plan(pokemon_types)
 
     name, description = _timed(
         "text_generation",
         generate_creature_text,
         pokemon_types,
+        body_plan,
     )
     front_prompt = build_front_image_prompt(
         name,
         description,
         pokemon_types,
+        body_plan,
     )
     back_prompt = build_back_image_prompt(name, description)
 
@@ -215,14 +172,17 @@ def generate_image(body: GenerateImageRequest):
     random_pokemon = get_random_pokemon_by_type(body.type)
     pokemon_data = get_pokemon_data(random_pokemon["url"])
     pokemon_types = get_pokemon_types(pokemon_data) or [body.type]
+    body_plan = get_pokemon_type_body_plan(pokemon_types)
     name, description = generate_creature_text(
         pokemon_types,
+        body_plan,
     )
     print(f"Generated creature: {name} - {description}")
     prompt = build_front_image_prompt(
         name,
         description,
         pokemon_types,
+        body_plan,
     )
     image = generate_front_image(prompt)
     return StreamingResponse(BytesIO(image), media_type="image/png")
@@ -250,7 +210,7 @@ def get_random_pokemon_by_type(pokemon_type: str) -> dict:
             status_code=404,
             detail="No Pokemon found for the specified type",
         )
-    return random.choice(pokemon_entries)["pokemon"]
+    return get_random_pokemon(pokemon_entries)["pokemon"]
 
 def get_pokemon_data(pokemon_url: str) -> dict:
     pokemon_response = requests.get(pokemon_url, timeout=30)
@@ -339,8 +299,9 @@ def remove_image_background(image: bytes) -> bytes:
 
 def generate_creature_text(
     pokemon_types: list[str],
+    body_plan: str,
 ) -> tuple[str, str]:
-    prompt = build_name_description_prompt(pokemon_types)
+    prompt = build_name_description_prompt(pokemon_types, body_plan)
     try:
         response = requests.post(
             f"{TEXT_SERVICE_URL}/generate",
@@ -349,29 +310,51 @@ def generate_creature_text(
         )
     except requests.RequestException as error:
         raise HTTPException(status_code=502, detail="Text service is unavailable") from error
+
     _service_response(response, "Text")
     generated_text = response.json()
-    return generated_text["name"], generated_text["description"]
+    name = generated_text["name"].strip()
+    description = generated_text["description"].strip()
+    return name, description
 
-def build_name_description_prompt( pokemon_types: list[str], 
+def build_name_description_prompt(
+    pokemon_types: list[str],
+    body_plan: str,
 ) -> str: 
     types = ", ".join(pokemon_types) 
-    name_style = random.choice(NAME_STYLES) 
-    description_tone = random.choice(DESCRIPTION_TONES) 
-    description_focus = random.choice(DESCRIPTION_FOCUSES) 
+    name_style = get_name_style()
+    description_tone = get_description_tone()
+    description_focus = get_description_focus()
     return f"""Create an original fantasy creature inspired by these types: {types}. 
     Return exactly one JSON object with exactly two string fields: "name" "description" 
+    LANGUAGE AND CHARACTERS:
+    - Write both fields in English using ASCII characters only.
+    - Do not use Chinese, Japanese, Korean, or any other non-ASCII characters.
+    - Use standard English letters and basic ASCII punctuation; do not use accented letters or emoji.
     NAME REQUIREMENTS: 
-    - One word only. 
+    - One word only.
+    - Only the first letter of the name is capitalized.
+    - STRICT RULE: the type labels are design context only and must not appear in the name.
+    - Forbidden type labels for this creature: {types}.
+    - This restriction is case-insensitive: "steel", "Steel", and "STEEL" are equally forbidden.
+    - The name must not equal, start with, end with, or contain any forbidden label as a recognizable word or word fragment.
+    - Do not use a spelling variant, plural, abbreviation, prefix, suffix, compound, or portmanteau based on a forbidden label.
+    - Invent the name from unrelated sounds; base its mood on the creature's personality and appearance, not on its type labels.
     - 3-12 letters. 
     - Easy to pronounce and remember. 
     - Original and distinctive. 
     - Do not use an existing famous character, creature, or franchise name. 
     - Do not use numbers, spaces, hyphens, apostrophes, or punctuation. 
     - The naming style should be {name_style}. 
-    - The name should feel appropriate for a creature with these types: {types}. 
-    DESCRIPTION REQUIREMENTS: 
-    - Exactly 1 or 2 sentences. 
+    CREATURE ANATOMY:
+    - Use this assigned body plan: {body_plan}
+    - Describe visible anatomy that clearly matches this body plan.
+    - Do not replace it with a generic upright humanoid design.
+    - Creatures without the Bug type must not have six or eight legs.
+    DESCRIPTION REQUIREMENTS:
+    - Do not include the body plan in the description.
+    - Exactly 2 or 3 sentences.
+    - Between 20 and 50 words.
     - Write like an official fantasy creature encyclopedia entry. 
     - Describe the creature's visible appearance, personality, and behavior. 
     - Focus particularly on {description_focus}. 
@@ -381,6 +364,8 @@ def build_name_description_prompt( pokemon_types: list[str],
     - Do not mention Pokémon, Pokemon, AI, image generation, prompts, or these instructions. 
     OUTPUT REQUIREMENTS: 
     - Return valid JSON only. 
+    - Before returning, check the "name" against every forbidden type label and its recognizable variants. If any appear, invent a different name and check again.
+    - This type-name restriction applies only to the "name" field; the description may describe type-inspired features.
     - Do not use Markdown or code fences. 
     - Do not include explanations or commentary. 
     - Do not include any fields other than "name" and "description". 
@@ -390,15 +375,13 @@ def build_front_image_prompt(
     name: str,
     description: str,
     pokemon_types: list[str],
+    body_plan: str,
 ) -> str:
     types = ", ".join(pokemon_types)
     type_palettes = [
         (
             pokemon_type,
-            POKEMON_TYPE_COLORS.get(
-                pokemon_type.lower(),
-                ["neutral gray", "cream"],
-            ),
+            get_pokemon_type_colors(pokemon_type),
         )
         for pokemon_type in pokemon_types
     ]
@@ -433,12 +416,17 @@ def build_front_image_prompt(
 
     Use the creature description as the primary visual design reference. The creature's appearance, physical features, colors, proportions, and distinctive characteristics should clearly reflect the description and its type combination.
 
+    ANATOMY AND SILHOUETTE (follow this assigned body plan):
+    {body_plan}
+    Make this body plan immediately recognizable from the silhouette. Keep the body axis, posture, limb count, and locomotion appropriate to it. Do not default to a human-like torso, arms, hands, or upright stance unless the assigned body plan calls for them.
+    Six- or eight-legged designs are allowed only when Bug is one of the creature's types.
+
     Create a unique creature design rather than a generic animal or a simple representation of its types.
 
     RENDERING:
-    - Full-body front-facing view.
-    - The creature faces directly toward the camera.
-    - Show the entire creature from the top of its head to the bottom of its feet.
+    - Show the entire creature from its natural front, angled ten degrees to the left side of the camera.
+    - Preserve the assigned body's natural horizontal, coiled, radial, or hovering orientation; do not force it upright.
+    - Keep every limb, tail, fin, wing, and tendril fully visible.
     - One creature only.
     - Centered composition.
     - Clear, readable silhouette.

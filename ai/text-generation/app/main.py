@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import threading
+import unicodedata
 from time import perf_counter
 
 from fastapi import FastAPI, HTTPException
@@ -16,9 +17,19 @@ app = FastAPI(
 )
 logger = logging.getLogger("uvicorn.error")
 device = "cuda" if torch.cuda.is_available() else "cpu"
+TEXT_GENERATION_TEMPERATURE = float(
+    os.getenv("TEXT_GENERATION_TEMPERATURE", "1.0")
+)
+TEXT_GENERATION_TOP_P = float(os.getenv("TEXT_GENERATION_TOP_P", "0.98"))
 text_processor = None
 text_model = None
 inference_lock = threading.Lock()
+MAX_GENERATION_ATTEMPTS = 2
+
+if TEXT_GENERATION_TEMPERATURE <= 0:
+    raise ValueError("TEXT_GENERATION_TEMPERATURE must be greater than 0")
+if not 0 < TEXT_GENERATION_TOP_P <= 1:
+    raise ValueError("TEXT_GENERATION_TOP_P must be greater than 0 and at most 1")
 
 
 class GenerateTextRequest(BaseModel):
@@ -106,8 +117,8 @@ def generate_text(prompt: str, max_new_tokens: int = 140) -> str:
             **inputs,
             max_new_tokens=max_new_tokens,
             do_sample=True,
-            temperature=0.9,
-            top_p=0.95,
+            temperature=TEXT_GENERATION_TEMPERATURE,
+            top_p=TEXT_GENERATION_TOP_P,
         )
     logger.info(
         "text timing stage=model_generate elapsed_seconds=%.2f output_tokens=%d",
@@ -124,29 +135,57 @@ def generate_text(prompt: str, max_new_tokens: int = 140) -> str:
     )[0].strip()
 
 
+def normalize_english_ascii(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text)
+    characters = []
+    for character in normalized:
+        if character.isascii():
+            characters.append(character)
+        elif not unicodedata.combining(character):
+            characters.append(" ")
+    return " ".join("".join(characters).split())
+
+
 @app.post("/generate")
 def generate(body: GenerateTextRequest):
     with inference_lock:
-        generated_text = generate_text(body.prompt)
+        for attempt in range(MAX_GENERATION_ATTEMPTS):
+            prompt = body.prompt
+            if attempt > 0:
+                prompt += (
+                    "\n\nYour previous response was invalid. Return a fresh, valid JSON object "
+                    'with non-empty string fields named "name" and "description". '
+                    "Write both fields in English using ASCII characters only."
+                )
 
-    try:
-        json_start = generated_text.index("{")
-        generated_data, _ = json.JSONDecoder().raw_decode(
-            generated_text[json_start:]
-        )
-        name = generated_data["name"].strip()
-        description = generated_data["description"].strip()
-    except (ValueError, KeyError, AttributeError, TypeError) as error:
-        raise HTTPException(
-            status_code=502,
-            detail="Text model returned an invalid name/description response",
-        ) from error
+            generated_text = generate_text(prompt)
+            try:
+                json_start = generated_text.index("{")
+                generated_data, _ = json.JSONDecoder().raw_decode(
+                    generated_text[json_start:]
+                )
+                raw_name = generated_data["name"]
+                raw_description = generated_data["description"]
+                if not isinstance(raw_name, str) or not isinstance(raw_description, str):
+                    raise ValueError("name and description must be strings")
 
-    if not name or not description:
-        raise HTTPException(
-            status_code=502,
-            detail="Text model returned an empty name or description",
-        )
+                raw_name = raw_name.strip()
+                raw_description = raw_description.strip()
+                if not raw_name or not raw_description:
+                    raise ValueError("name and description must not be empty")
+
+                name = normalize_english_ascii(raw_name)
+                description = normalize_english_ascii(raw_description)
+                break
+            except (ValueError, KeyError, AttributeError, TypeError) as error:
+                if attempt + 1 == MAX_GENERATION_ATTEMPTS:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Text model returned an invalid name/description response after retry",
+                    ) from error
+                logger.warning(
+                    "Text model returned an invalid name/description response; retrying"
+                )
 
     return {
         "name": name,
