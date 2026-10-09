@@ -106,7 +106,7 @@ def generate_text(prompt: str, max_new_tokens: int = 140) -> str:
             **inputs,
             max_new_tokens=max_new_tokens,
             do_sample=True,
-            temperature=0.8,
+            temperature=0.9,
             top_p=0.95,
         )
     logger.info(

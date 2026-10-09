@@ -95,6 +95,8 @@ services:
     gpus: all
     environment:
       HF_HOME: /cache/huggingface
+      HF_ENABLE_PARALLEL_LOADING: "true"
+      HF_PARALLEL_LOADING_WORKERS: "8"
       CUDA_VISIBLE_DEVICES: ${AI_TEXT_GPU:-0}
     volumes:
       - huggingface-cache:/cache/huggingface
@@ -118,6 +120,8 @@ services:
     gpus: all
     environment:
       HF_HOME: /cache/huggingface
+      HF_ENABLE_PARALLEL_LOADING: "true"
+      HF_PARALLEL_LOADING_WORKERS: "8"
       CUDA_VISIBLE_DEVICES: ${AI_IMAGE_GPU:-0}
     volumes:
       - huggingface-cache:/cache/huggingface
