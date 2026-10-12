@@ -1,3 +1,4 @@
+from importlib import import_module
 from io import BytesIO
 import os
 import threading
@@ -32,10 +33,27 @@ def startup():
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     opts.enable_cpu_mem_arena = True
 
+    # The CUDA and TensorRT wheels place shared libraries in site-packages,
+    # which are not on the system loader's default search path in python:slim.
+    ort.preload_dlls(directory="")
+    import_module("tensorrt_libs")
+
     background_removal_model = ort.InferenceSession(
         model_path,
         session_options=opts,
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        providers=[
+            ("TensorrtExecutionProvider", {
+                "device_id": 0,                       # Select GPU to execute
+                "trt_fp16_enable": True,              # Enable FP16 precision for faster inference
+            }),
+            ("CUDAExecutionProvider", {
+                "device_id": 0,
+                "arena_extend_strategy": "kNextPowerOfTwo",
+                "cudnn_conv_algo_search": "EXHAUSTIVE",
+                "do_copy_in_default_stream": True,
+            }),
+            "CPUExecutionProvider",
+        ],
     )
     print("Background removal model ready")
 

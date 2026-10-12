@@ -517,7 +517,7 @@ Creature description:
 {description}
 
 CAMERA AND ORIENTATION ARE CRITICAL:
-Show the creature from behind, turned 150 degrees away from the camera. The creature must still face away from the camera; show mostly its back with only a small amount of its right side visible.
+Show the creature from behind, turned 210 degrees away from the camera. The creature must still face away from the camera; show mostly its back with only a small amount of its right side visible.
 
 The creature must NOT face the camera.
 

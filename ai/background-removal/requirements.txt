@@ -3,5 +3,6 @@ uvicorn[standard]
 python-multipart
 numpy
 pillow
-onnxruntime-gpu==1.22.0
+onnxruntime-gpu[cuda,cudnn]==1.22.0
+tensorrt-cu12==10.9.0.34
 huggingface_hub
