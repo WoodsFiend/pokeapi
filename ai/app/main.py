@@ -2,16 +2,15 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import logging
 import os
-from pathlib import Path
 import types
 from time import perf_counter
-from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import requests
 
+from asset_storage import store_generated_assets
 from random_choices import (
     get_description_focus,
     get_description_tone,
@@ -39,9 +38,6 @@ PARALLEL_MODEL_CALLS = os.getenv(
     "AI_PARALLEL_MODEL_CALLS",
     "false",
 ).lower() == "true"
-GENERATED_ASSET_DIR = Path(
-    os.getenv("GENERATED_ASSET_DIR", "/app/generated-assets")
-)
 
 class GenerateByTypeRequest(BaseModel):
     type: str
@@ -58,7 +54,7 @@ def health():
     return {"status": "ok"}
 
 @app.post("/generateByType")
-def generate_by_type(request: Request, body: GenerateByTypeRequest):
+def generate_by_type(body: GenerateByTypeRequest):
     started = perf_counter()
     random_pokemon = _timed(
         "pokemon_type_lookup",
@@ -125,38 +121,23 @@ def generate_by_type(request: Request, body: GenerateByTypeRequest):
         )
         audio = _timed("audio_generation", generate_audio, description)
 
-    GENERATED_ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    asset_id = uuid4().hex
-    front_filename = f"{asset_id}-front.png"
-    back_filename = f"{asset_id}-back.png"
-    audio_filename = f"{asset_id}-cry.wav"
-    (GENERATED_ASSET_DIR / front_filename).write_bytes(front_image)
-    (GENERATED_ASSET_DIR / back_filename).write_bytes(back_image)
-    (GENERATED_ASSET_DIR / audio_filename).write_bytes(audio)
+    asset_urls = store_generated_assets(front_image, back_image, audio)
     logger.info(
         "ai timing stage=generate_total elapsed_seconds=%.2f",
         perf_counter() - started,
     )
 
-    public_base_url = os.getenv(
-        "PUBLIC_BASE_URL",
-        str(request.base_url).rstrip("/"),
-    ).rstrip("/")
     pokemon_data["name"] = name
     pokemon_data["description"] = description
-    pokemon_data.setdefault("sprites", {})["front_default"] = (
-        f"{public_base_url}/generated/{front_filename}"
+    pokemon_data.setdefault("sprites", {}).update(
+        front_default=asset_urls["front_default"],
+        back_default=asset_urls["back_default"],
     )
-    pokemon_data["sprites"]["back_default"] = (
-        f"{public_base_url}/generated/{back_filename}"
-    )
-    pokemon_data.setdefault("cries", {})["latest"] = (
-        f"{public_base_url}/generated/{audio_filename}"
-    )
+    pokemon_data.setdefault("cries", {})["latest"] = asset_urls["latest"]
     return pokemon_data
 
 @app.post("/generateById")
-def generate_by_id(request: Request, body: GenerateByIdRequest):
+def generate_by_id(body: GenerateByIdRequest):
     started = perf_counter()
     pokemon_data = _timed(
         "pokemon_id_fetch",
@@ -219,49 +200,20 @@ def generate_by_id(request: Request, body: GenerateByIdRequest):
         )
         audio = _timed("audio_generation", generate_audio, description)
 
-    GENERATED_ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    asset_id = uuid4().hex
-    front_filename = f"{asset_id}-front.png"
-    back_filename = f"{asset_id}-back.png"
-    audio_filename = f"{asset_id}-cry.wav"
-    (GENERATED_ASSET_DIR / front_filename).write_bytes(front_image)
-    (GENERATED_ASSET_DIR / back_filename).write_bytes(back_image)
-    (GENERATED_ASSET_DIR / audio_filename).write_bytes(audio)
+    asset_urls = store_generated_assets(front_image, back_image, audio)
     logger.info(
         "ai timing stage=generate_total elapsed_seconds=%.2f",
         perf_counter() - started,
     )
 
-    public_base_url = os.getenv(
-        "PUBLIC_BASE_URL",
-        str(request.base_url).rstrip("/"),
-    ).rstrip("/")
     pokemon_data["name"] = name
     pokemon_data["description"] = description
-    pokemon_data.setdefault("sprites", {})["front_default"] = (
-        f"{public_base_url}/generated/{front_filename}"
+    pokemon_data.setdefault("sprites", {}).update(
+        front_default=asset_urls["front_default"],
+        back_default=asset_urls["back_default"],
     )
-    pokemon_data["sprites"]["back_default"] = (
-        f"{public_base_url}/generated/{back_filename}"
-    )
-    pokemon_data.setdefault("cries", {})["latest"] = (
-        f"{public_base_url}/generated/{audio_filename}"
-    )
+    pokemon_data.setdefault("cries", {})["latest"] = asset_urls["latest"]
     return pokemon_data
-
-@app.get("/generated/{filename}")
-def get_generated_asset(filename: str):
-    asset_path = (GENERATED_ASSET_DIR / filename).resolve()
-    if asset_path.parent != GENERATED_ASSET_DIR.resolve() or not asset_path.is_file():
-        raise HTTPException(status_code=404, detail="Generated asset not found")
-
-    media_type = "audio/wav" if asset_path.suffix == ".wav" else "image/png"
-    return FileResponse(
-        asset_path,
-        media_type=media_type,
-        filename=asset_path.name,
-        content_disposition_type="inline",
-    )
 
 @app.post("/generateImage")
 def generate_image(body: GenerateByTypeRequest):
@@ -542,6 +494,7 @@ def build_front_image_prompt(
     COMPOSITION:
     - Creature fully visible and entirely inside the image.
     - Leave a small amount of white space around the creature.
+    - The creature should have a face with eyes, mouth, or other facial features visible from the front view.
     - No cropping.
     - No environment or scenery.
     - No ground plane.
@@ -564,7 +517,7 @@ Creature description:
 {description}
 
 CAMERA AND ORIENTATION ARE CRITICAL:
-Show the creature from behind, turned 220 degrees away from the camera. The creature must still face away from the camera; show mostly its back with only a small amount of its right side visible.
+Show the creature from behind, turned 150 degrees away from the camera. The creature must still face away from the camera; show mostly its back with only a small amount of its right side visible.
 
 The creature must NOT face the camera.
 

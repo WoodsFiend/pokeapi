@@ -170,11 +170,11 @@ services:
       BACKGROUND_SERVICE_URL: http://background-removal-model:8000
       TEXT_SERVICE_URL: http://text-model:8000
       AUDIO_SERVICE_URL: http://audio-model:8000
-      GENERATED_ASSET_DIR: /app/generated-assets
+      STORAGE_SERVICE_URL: http://storage:8000
       AI_PARALLEL_MODEL_CALLS: ${AI_PARALLEL_MODEL_CALLS:-false}
-    volumes:
-      - generated-assets:/app/generated-assets
     depends_on:
+      storage:
+        condition: service_healthy
       image-model:
         condition: service_healthy
       background-removal-model:
@@ -191,9 +191,28 @@ services:
       start_period: 30m
     restart: always
 
+  storage:
+    build:
+      context: ./storage
+    container_name: ai-storage
+    ports:
+      - "${STORAGE_PORT:-8002}:8000"
+    environment:
+      SPRITE_OUTPUT_DIR: /data/sprites/
+      CRY_OUTPUT_DIR: /data/cries/
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-http://localhost:8002}
+    volumes:
+      - storage-assets:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: always
+
 volumes:
   pg_data:
   redis_data:
   graphql_cache:
   huggingface-cache:
-  generated-assets:
+  storage-assets:
