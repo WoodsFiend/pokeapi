@@ -200,7 +200,7 @@ services:
     environment:
       SPRITE_OUTPUT_DIR: /data/sprites/
       CRY_OUTPUT_DIR: /data/cries/
-      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-http://localhost:8002}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-https://data.daemonarium.app/}
     volumes:
       - storage-assets:/data
     healthcheck:
@@ -210,6 +210,13 @@ services:
       retries: 3
     restart: always
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: docker-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
 volumes:
   pg_data:
   redis_data:
