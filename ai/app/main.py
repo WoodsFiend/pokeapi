@@ -43,9 +43,11 @@ GENERATED_ASSET_DIR = Path(
     os.getenv("GENERATED_ASSET_DIR", "/app/generated-assets")
 )
 
-class GenerateImageRequest(BaseModel):
+class GenerateByTypeRequest(BaseModel):
     type: str
 
+class GenerateByIdRequest(BaseModel):
+    id: int
 
 class GenerateAudioRequest(BaseModel):
     description: str
@@ -55,8 +57,8 @@ class GenerateAudioRequest(BaseModel):
 def health():
     return {"status": "ok"}
 
-@app.post("/generate")
-def generate(request: Request, body: GenerateImageRequest):
+@app.post("/generateByType")
+def generate_by_type(request: Request, body: GenerateByTypeRequest):
     started = perf_counter()
     random_pokemon = _timed(
         "pokemon_type_lookup",
@@ -69,6 +71,100 @@ def generate(request: Request, body: GenerateImageRequest):
         random_pokemon["url"],
     )
     pokemon_types = get_pokemon_types(pokemon_data) or [body.type]
+    body_plan = get_pokemon_type_body_plan(pokemon_types)
+
+    name, description = _timed(
+        "text_generation",
+        generate_creature_text,
+        pokemon_types,
+        body_plan,
+    )
+    front_prompt = build_front_image_prompt(
+        name,
+        description,
+        pokemon_types,
+        body_plan,
+    )
+    back_prompt = build_back_image_prompt(name, description)
+
+    if PARALLEL_MODEL_CALLS:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            front_future = executor.submit(
+                _timed,
+                "front_image_generation_and_background_removal",
+                generate_front_image,
+                front_prompt,
+            )
+            audio_future = executor.submit(
+                _timed,
+                "audio_generation",
+                generate_audio,
+                description,
+            )
+            front_image = front_future.result()
+            back_future = executor.submit(
+                _timed,
+                "back_image_and_background_removal",
+                generate_back_image,
+                front_image,
+                back_prompt,
+            )
+            back_image = back_future.result()
+            audio = audio_future.result()
+    else:
+        front_image = _timed(
+            "front_image_generation_and_background_removal",
+            generate_front_image,
+            front_prompt,
+        )
+        back_image = _timed(
+            "back_image_and_background_removal",
+            generate_back_image,
+            front_image,
+            back_prompt,
+        )
+        audio = _timed("audio_generation", generate_audio, description)
+
+    GENERATED_ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    asset_id = uuid4().hex
+    front_filename = f"{asset_id}-front.png"
+    back_filename = f"{asset_id}-back.png"
+    audio_filename = f"{asset_id}-cry.wav"
+    (GENERATED_ASSET_DIR / front_filename).write_bytes(front_image)
+    (GENERATED_ASSET_DIR / back_filename).write_bytes(back_image)
+    (GENERATED_ASSET_DIR / audio_filename).write_bytes(audio)
+    logger.info(
+        "ai timing stage=generate_total elapsed_seconds=%.2f",
+        perf_counter() - started,
+    )
+
+    public_base_url = os.getenv(
+        "PUBLIC_BASE_URL",
+        str(request.base_url).rstrip("/"),
+    ).rstrip("/")
+    pokemon_data["name"] = name
+    pokemon_data["description"] = description
+    pokemon_data.setdefault("sprites", {})["front_default"] = (
+        f"{public_base_url}/generated/{front_filename}"
+    )
+    pokemon_data["sprites"]["back_default"] = (
+        f"{public_base_url}/generated/{back_filename}"
+    )
+    pokemon_data.setdefault("cries", {})["latest"] = (
+        f"{public_base_url}/generated/{audio_filename}"
+    )
+    return pokemon_data
+
+@app.post("/generateById")
+def generate_by_id(request: Request, body: GenerateByIdRequest):
+    started = perf_counter()
+    pokemon_data = _timed(
+        "pokemon_id_fetch",
+        get_pokemon,
+        body.id,
+    )
+
+    pokemon_types = get_pokemon_types(pokemon_data)
     body_plan = get_pokemon_type_body_plan(pokemon_types)
 
     name, description = _timed(
@@ -168,7 +264,7 @@ def get_generated_asset(filename: str):
     )
 
 @app.post("/generateImage")
-def generate_image(body: GenerateImageRequest):
+def generate_image(body: GenerateByTypeRequest):
     random_pokemon = get_random_pokemon_by_type(body.type)
     pokemon_data = get_pokemon_data(random_pokemon["url"])
     pokemon_types = get_pokemon_types(pokemon_data) or [body.type]
@@ -195,6 +291,15 @@ def generate_cry(body: GenerateAudioRequest):
         media_type="audio/wav",
         headers={"Content-Disposition": "inline; filename=creature.wav"},
     )
+
+def get_pokemon(pokemon_id: int) -> dict:
+    response = requests.get(
+        f"https://pokeapi.co/api/v2/pokemon/{pokemon_id}/",
+        timeout=30,
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail="Failed to fetch Pokemon data")
+    return response.json()
 
 def get_random_pokemon_by_type(pokemon_type: str) -> dict:
     response = requests.get(
@@ -454,22 +559,21 @@ def build_front_image_prompt(
 def build_back_image_prompt(name: str, description: str) -> str:
     return f"""Use the supplied front image as the identity reference for the same creature.
 
+Creature: {name}
+Creature description:
+{description}
+
 CAMERA AND ORIENTATION ARE CRITICAL:
-The camera is positioned directly behind the creature. The creature is facing exactly 180 degrees away from the camera. Show a direct rear view of the creature's back, with the creature's central body axis aligned straight toward the background.
+Show the creature from behind, turned 220 degrees away from the camera. The creature must still face away from the camera; show mostly its back with only a small amount of its right side visible.
 
 The creature must NOT face the camera.
 
-- Full-body rear view.
-- Back completely visible.
-- Face completely hidden.
-- No eyes, mouth, nose, or facial features visible.
-- No head turned toward the camera.
 - No looking over its shoulder.
-- No side angle.
-- No three-quarter angle.
+- Avoid a strong side or three-quarter view; keep the rear view dominant.
 - No front-facing pose.
 - No profile view.
 - Preserve the creature's identity, proportions, colors, markings, accessories, and distinctive physical characteristics from the reference image.
+- Preserve its rear anatomy and appendages as described and shown in the reference. Such as a tail, wings, fins, or tendrils.
 - Pixel-art video game sprite style.
 - Centered composition.
 - Plain solid white background.
