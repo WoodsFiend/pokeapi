@@ -391,6 +391,8 @@ def build_name_description_prompt(
     NAME REQUIREMENTS: 
     - One word only.
     - Only the first letter of the name is capitalized.
+    - Maximum length: 12 characters.
+    - No spaces, hyphens, apostrophes, or punctuation.
     - STRICT RULE: the type labels are design context only and must not appear in the name.
     - Forbidden type labels for this creature: {types}.
     - This restriction is case-insensitive: "steel", "Steel", and "STEEL" are equally forbidden.
