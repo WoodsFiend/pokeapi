@@ -1,4 +1,12 @@
 services:
+  daemonarium:
+    build:
+      context: ./website
+      dockerfile: Dockerfile
+    expose:
+      - "80"
+    restart: unless-stopped
+
   cache:
     image: redis:8.6.4-alpine
     volumes:
@@ -41,6 +49,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    depends_on:
+      daemonarium:
+        condition: service_healthy
     restart: always
     # command: [nginx-debug, '-g', 'daemon off;']
     volumes:
