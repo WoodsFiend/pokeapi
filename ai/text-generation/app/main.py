@@ -40,7 +40,7 @@ def setup():
     global text_processor
     global text_model
 
-    token = os.getenv("HF_TOKEN")
+    token = os.getenv("HF_TOKEN") or None
     model_name = os.getenv(
         "TEXT_MODEL",
         "Qwen/Qwen2.5-VL-3B-Instruct",

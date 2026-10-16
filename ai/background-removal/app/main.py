@@ -2,6 +2,7 @@ from importlib import import_module
 from io import BytesIO
 import os
 import threading
+from time import perf_counter
 
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import Response
@@ -19,13 +20,14 @@ inference_lock = threading.Lock()
 @app.on_event("startup")
 def startup():
     global background_removal_model
+    startup_started = perf_counter()
     model_path = hf_hub_download(
         repo_id=os.getenv(
             "BACKGROUND_REMOVAL_MODEL",
             "studioludens/birefnet-lite-512",
         ),
         filename="onnx/model_fp16.onnx",
-        token=os.getenv("HF_TOKEN"),
+        token=os.getenv("HF_TOKEN") or None,
     )
 
     # --- Optimization 2: Tuned ONNX Session Options ---
@@ -38,6 +40,13 @@ def startup():
     ort.preload_dlls(directory="")
     import_module("tensorrt_libs")
 
+    trt_cache_dir = os.getenv(
+        "TRT_CACHE_DIR",
+        "/var/cache/onnxruntime/trt",
+    )
+    os.makedirs(trt_cache_dir, exist_ok=True)
+
+    session_started = perf_counter()
     background_removal_model = ort.InferenceSession(
         model_path,
         session_options=opts,
@@ -45,6 +54,10 @@ def startup():
             ("TensorrtExecutionProvider", {
                 "device_id": 0,                       # Select GPU to execute
                 "trt_fp16_enable": True,              # Enable FP16 precision for faster inference
+                "trt_engine_cache_enable": True,
+                "trt_engine_cache_path": trt_cache_dir,
+                "trt_timing_cache_enable": True,
+                "trt_timing_cache_path": trt_cache_dir,
             }),
             ("CUDAExecutionProvider", {
                 "device_id": 0,
@@ -55,7 +68,12 @@ def startup():
             "CPUExecutionProvider",
         ],
     )
-    print("Background removal model ready")
+    print(
+        "Background removal model ready: "
+        f"session_init_seconds={perf_counter() - session_started:.2f}, "
+        f"startup_seconds={perf_counter() - startup_started:.2f}, "
+        f"providers={background_removal_model.get_providers()}"
+    )
 
 
 @app.get("/health")

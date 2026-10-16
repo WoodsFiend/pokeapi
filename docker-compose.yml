@@ -80,15 +80,14 @@ services:
   audio-model:
     build:
       context: ./ai/audio-generation
+      secrets:
+        - hf_token
     container_name: ai-audio-generation
     env_file:
       - ./ai/.env
     gpus: all
     environment:
-      HF_HOME: /cache/huggingface
       CUDA_VISIBLE_DEVICES: ${AI_AUDIO_GPU:-0}
-    volumes:
-      - huggingface-cache:/cache/huggingface
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
       interval: 30s
@@ -100,17 +99,18 @@ services:
   text-model:
     build:
       context: ./ai/text-generation
+      args:
+        TEXT_MODEL: ${TEXT_MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
+      secrets:
+        - hf_token
     container_name: ai-text-generation
     env_file:
       - ./ai/.env
     gpus: all
     environment:
-      HF_HOME: /cache/huggingface
       HF_ENABLE_PARALLEL_LOADING: "true"
       HF_PARALLEL_LOADING_WORKERS: "8"
       CUDA_VISIBLE_DEVICES: ${AI_TEXT_GPU:-0}
-    volumes:
-      - huggingface-cache:/cache/huggingface
     depends_on:
       audio-model:
         condition: service_healthy
@@ -125,17 +125,18 @@ services:
   image-model:
     build:
       context: ./ai/image-generation
+      args:
+        IMAGE_MODEL: ${IMAGE_MODEL:-black-forest-labs/FLUX.2-klein-4B}
+      secrets:
+        - hf_token
     container_name: ai-image-generation
     env_file:
       - ./ai/.env
     gpus: all
     environment:
-      HF_HOME: /cache/huggingface
       HF_ENABLE_PARALLEL_LOADING: "true"
       HF_PARALLEL_LOADING_WORKERS: "8"
       CUDA_VISIBLE_DEVICES: ${AI_IMAGE_GPU:-0}
-    volumes:
-      - huggingface-cache:/cache/huggingface
     depends_on:
       text-model:
         condition: service_healthy
@@ -150,15 +151,19 @@ services:
   background-removal-model:
     build:
       context: ./ai/background-removal
+      args:
+        BACKGROUND_REMOVAL_MODEL: ${BACKGROUND_REMOVAL_MODEL:-studioludens/birefnet-lite-512}
+      secrets:
+        - hf_token
     container_name: ai-background-removal
     env_file:
       - ./ai/.env
     gpus: all
     environment:
-      HF_HOME: /cache/huggingface
       CUDA_VISIBLE_DEVICES: ${AI_BACKGROUND_GPU:-0}
+      TRT_CACHE_DIR: /var/cache/onnxruntime/trt
     volumes:
-      - huggingface-cache:/cache/huggingface
+      - background-removal-trt-cache:/var/cache/onnxruntime/trt
     depends_on:
       image-model:
         condition: service_healthy
@@ -232,5 +237,9 @@ volumes:
   pg_data:
   redis_data:
   graphql_cache:
-  huggingface-cache:
   storage-assets:
+  background-removal-trt-cache:
+
+secrets:
+  hf_token:
+    environment: HF_TOKEN

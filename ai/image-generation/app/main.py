@@ -3,11 +3,16 @@ import logging
 import os
 import threading
 from time import perf_counter
-from transformers import BitsAndBytesConfig, AutoModelForCausalLM
+from diffusers import BitsAndBytesConfig as DiffusersBitsAndBytesConfig
+from transformers import (
+    AutoModelForCausalLM,
+    BitsAndBytesConfig as TransformersBitsAndBytesConfig,
+)
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import Response
 from diffusers import Flux2KleinPipeline, Flux2Transformer2DModel 
+from huggingface_hub import snapshot_download
 from PIL import Image
 from pydantic import BaseModel, Field
 import torch
@@ -29,10 +34,20 @@ class GenerateFrontRequest(BaseModel):
 def setup():
     global image_model
 
-    token = os.getenv("HF_TOKEN")
     model_name = os.getenv(
         "IMAGE_MODEL",
         "black-forest-labs/FLUX.2-klein-4B",
+    )
+    cache_dir = os.getenv("HF_HUB_CACHE")
+    model_path = snapshot_download(
+        repo_id=model_name,
+        cache_dir=cache_dir,
+        local_files_only=True,
+    )
+    lora_path = snapshot_download(
+        repo_id="Limbicnation/pixel-art-lora",
+        cache_dir=cache_dir,
+        local_files_only=True,
     )
 
     dtype = (
@@ -47,11 +62,17 @@ def setup():
 
     # 1. Configure 4-bit/8-bit Quantization Config
     # Using 4-bit NF4 configuration for maximum VRAM savings
-    quantization_config = BitsAndBytesConfig(
+    transformer_quantization_config = DiffusersBitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.bfloat16,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True
+        bnb_4bit_use_double_quant=True,
+    )
+    text_encoder_quantization_config = TransformersBitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
     )
 
     logger.info("Loading quantized components with Flash Attention 2...")
@@ -59,39 +80,42 @@ def setup():
     # 2. Load individual subcomponents with Flash Attention and Quantization
     # Load Transformer Block
     transformer = Flux2Transformer2DModel.from_pretrained(
-        model_name,
+        model_path,
         subfolder="transformer",
-        quantization_config=quantization_config,
+        quantization_config=transformer_quantization_config,
         dtype=torch.bfloat16,
         attn_implementation="sdpa",
-        device_map=device
+        device_map=device,
+        local_files_only=True,
     )
 
     # Load Text Encoder (Ensure the subfolder matches your specific model topology)
     text_encoder = AutoModelForCausalLM.from_pretrained(
-        model_name,
+        model_path,
         subfolder="text_encoder",
-        quantization_config=quantization_config,
+        quantization_config=text_encoder_quantization_config,
         dtype=torch.bfloat16,
         attn_implementation="sdpa",
-        device_map=device
+        device_map=device,
+        local_files_only=True,
     )
 
     # 3. Assemble the Pipeline
     # We pass the pre-loaded components to prevent the pipeline from loading full precision weights first
     image_model = Flux2KleinPipeline.from_pretrained(
-        model_name,
+        model_path,
         transformer=transformer,
         text_encoder=text_encoder,
         dtype=torch.bfloat16,
-        device_map=device
+        device_map=device,
+        local_files_only=True,
     )
 
     image_model.load_lora_weights(
-        "Limbicnation/pixel-art-lora"
+        lora_path,
+        weight_name="pytorch_lora_weights.safetensors",
+        local_files_only=True,
     )
-
-    image_model.to(device)
 
     logger.info(
         "CUDA: %s | GPU: %s",
