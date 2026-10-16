@@ -111,6 +111,8 @@ docker compose exec -T app python manage.py migrate --settings=config.docker-com
 docker compose exec -T app sh -c 'echo "from data.v2.build import build_all; build_all()" | python manage.py shell --settings=config.docker-compose'
 ```
 
+For a RunPod Serverless endpoint, attach a persistent volume mounted at `/runpod-volume` and set `TRT_CACHE_DIR=/runpod-volume/trt-cache`. The worker builds the TensorRT engine on first startup and stores it on that volume for later startups. Cache paths are separated by GPU model and compute capability, CUDA driver, model contents, TensorRT version, and ONNX Runtime version, so different GPU/runtime variants get separate engines. The local Docker Compose setup uses a named volume for the same cache.
+
 Browse [localhost/api/v2/](http://localhost/api/v2/) or [localhost/api/v2/pokemon/bulbasaur/](http://localhost/api/v2/pokemon/bulbasaur/) on port `80`.
 
 To rebuild the database and apply any CSV file updates, run
