@@ -1,6 +1,8 @@
 FROM nginx:1.31.2-alpine3.23
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN apk add --no-cache ca-certificates
+
+COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY index.html styles.css game.js /usr/share/nginx/html/
 COPY images/ /usr/share/nginx/html/images/
 

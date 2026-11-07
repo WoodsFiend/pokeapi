@@ -47,6 +47,7 @@
   const NAV = [
     ['field', '⌂', 'The Field'], ['codex', '❋', 'Daemonarium'], ['coven', '◉', 'The Coven'], ['satchel', '▤', 'Satchel'], ['hall', '⌁', 'Broken Contracts'],
   ];
+  NAV.push(['generator', '\u2726', 'Creature Generator']);
 
   const uid = () => Math.random().toString(36).slice(2, 9);
   const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -122,6 +123,19 @@
   let state = loadState();
   const app = document.getElementById('app');
   let toastTimer;
+  let generatorMode = 'id';
+  let generatorIdInput = '1';
+  let generatorTypeInput = '';
+  let generatorPending = false;
+  let generatorMessage = '';
+  let generatorError = false;
+  let generatorResult = null;
+  const GENERATOR_TYPES = [
+    'normal', 'fire', 'water', 'electric', 'grass', 'ice', 'fighting', 'poison',
+    'ground', 'flying', 'psychic', 'bug', 'rock', 'ghost', 'dragon', 'dark', 'steel', 'fairy',
+  ];
+  const GENERATE_BY_ID_URL = '/generator-api/generateById';
+  const GENERATE_BY_TYPE_URL = '/generator-api/generateByType';
   const esc = (text = '') => String(text).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const isSoul = (spirit) => spirit.id === state.soulboundId;
   const team = () => state.spirits.filter((s) => s.inTeam);
@@ -244,6 +258,58 @@
     return `<div class="landing-page"><section class="landing-hero"><img class="landing-art" src="images/daemonarium-banner.png" alt="A glimpse into the spirit world"><div class="landing-shade"></div><div class="landing-copy"><div class="eyebrow">A CREATURE-COLLECTION RPG ABOUT TRUST</div><h1>Beyond the veil, <em>every spirit has a name.</em></h1><p>Magicians call them daemons. They call themselves spirits. Step into a mysterious world where every contract is a choice between power, trust, and freedom.</p><div class="landing-actions"><button class="primary-button" data-action="navigate" data-view="field">ENTER THE FIELD <span aria-hidden="true">→</span></button><button class="secondary-button" data-action="navigate" data-view="codex">BROWSE THE DAEMONARIUM</button></div></div><div class="landing-stamp" aria-hidden="true">LISTEN<br>BEFORE<br>YOU BIND</div></section><div class="landing-intro"><div class="eyebrow">THE WORLD OF DAEMONARIUM</div><h2>Power is easy to measure.<br><em>A bond is harder to know.</em></h2><p>Explore uncanny regions, meet intelligent spirits, and build a coven through turn-based battles and magical agreements. Each spirit carries its own personality, history, and future.</p></div><div class="landing-cards"><article class="landing-card"><span class="landing-number">01 / WANDER</span><h3>Follow the signs</h3><p>Cross the Spirit Grass when you are ready to meet what waits within. Every region has its own creatures, discoveries, and secrets.</p></article><article class="landing-card"><span class="landing-number">02 / MAKE A CHOICE</span><h3>Earn a contract</h3><p>Use elemental moves and careful tactics to overcome a spirit, then offer a binding sigil—or let them return to the wild.</p></article><article class="landing-card"><span class="landing-number">03 / KEEP THE BOND</span><h3>Grow together</h3><p>Your companions learn, evolve, and keep the memories that make them themselves. Battles can strain an ordinary contract; one Soul Bound stays safe. A broken bond can be reclaimed if the spirit returns.</p></article></div><section class="landing-question"><span class="landing-quote-mark" aria-hidden="true">“</span><div><div class="eyebrow">A QUESTION WITHOUT AN EASY ANSWER</div><h2>Does a contract create a partnership?</h2><p>Or does it ask who gets to name, protect, and choose the future of a spirit?</p></div><button class="text-link" data-action="navigate" data-view="field">MAKE YOUR FIRST JOURNEY <span aria-hidden="true">→</span></button></section></div>`;
   }
 
+  function generatorView() {
+    const result = generatorResult;
+    const resultTypes = result?.types.length
+      ? `<div class="generator-type-list">${result.types.map((type) => `<span class="badge type-badge">${esc(type)}</span>`).join('')}</div>`
+      : '';
+    const resultAssets = result
+      ? `<div class="generator-assets">${result.frontImage ? `<figure class="generator-asset"><figcaption>FRONT VIEW</figcaption><img data-generator-image src="${esc(result.frontImage)}" alt="${esc(result.name)} front view"></figure>` : ''}${result.backImage ? `<figure class="generator-asset"><figcaption>BACK VIEW</figcaption><img data-generator-image src="${esc(result.backImage)}" alt="${esc(result.name)} back view"></figure>` : ''}</div>${result.audio ? `<div class="generator-audio"><h3>Creature cry</h3><audio controls preload="none" src="${esc(result.audio)}">Your browser does not support audio playback.</audio></div>` : ''}`
+      : '';
+
+    return `<div class="page-heading"><div><div class="eyebrow">CREATURE STUDIO &nbsp;/&nbsp; AI GENERATION</div><h1>Creature Generator</h1><p>Choose a Pokemon ID or type as a starting point. The generator returns a new name, description, two views, and a cry.</p></div></div><section class="panel generator-panel" aria-label="Creature generation options"><div class="generator-tabs" role="tablist" aria-label="Generation method"><button class="generator-tab${generatorMode === 'id' ? ' active' : ''}" type="button" role="tab" aria-selected="${generatorMode === 'id'}" aria-controls="generator-id-form" data-action="generator-mode" data-mode="id">Generate by ID</button><button class="generator-tab${generatorMode === 'type' ? ' active' : ''}" type="button" role="tab" aria-selected="${generatorMode === 'type'}" aria-controls="generator-type-form" data-action="generator-mode" data-mode="type">Generate by type</button></div><form id="generator-id-form" data-generator-form="id"${generatorMode === 'id' ? '' : ' hidden'}><div class="generator-form-row"><div class="generator-field"><label for="generator-pokemon-id">Pokemon ID</label><input id="generator-pokemon-id" name="id" type="number" min="1" step="1" value="${esc(generatorIdInput)}" required></div><button class="primary-button generator-submit" type="submit" ${generatorPending ? 'disabled' : ''}>${generatorPending && generatorMode === 'id' ? 'GENERATING...' : 'GENERATE BY ID'}</button></div></form><form id="generator-type-form" data-generator-form="type"${generatorMode === 'type' ? '' : ' hidden'}><div class="generator-form-row"><div class="generator-field"><label for="generator-pokemon-type">Pokemon type</label><select id="generator-pokemon-type" name="type" required><option value="">Choose a type</option>${GENERATOR_TYPES.map((type) => `<option value="${type}"${generatorTypeInput === type ? ' selected' : ''}>${type}</option>`).join('')}</select></div><button class="primary-button generator-submit" type="submit" ${generatorPending ? 'disabled' : ''}>${generatorPending && generatorMode === 'type' ? 'GENERATING...' : 'GENERATE BY TYPE'}</button></div></form><p class="generator-status${generatorError ? ' error' : ''}" role="status" aria-live="polite">${esc(generatorMessage || 'Generation can take a few minutes.')}</p>${result ? `<section class="generator-result" aria-live="polite"><div class="generator-result-heading"><h2>${esc(result.name)}</h2>${result.id != null ? `<span class="generator-source">SOURCE POKEMON #${esc(result.id)}</span>` : ''}</div>${resultTypes}<p class="generator-description">${esc(result.description)}</p>${resultAssets}</section>` : ''}</section>`;
+  }
+
+  async function requestCreatureGeneration(url, body) {
+    generatorPending = true;
+    generatorMessage = 'Generating... this can take a few minutes.';
+    generatorError = false;
+    generatorResult = null;
+    render();
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed with status ${response.status}.`);
+      }
+      generatorResult = {
+        name: typeof data.name === 'string' && data.name ? data.name : 'Unnamed creature',
+        description: typeof data.description === 'string' ? data.description : 'No description was returned.',
+        id: data.id ?? null,
+        types: (Array.isArray(data.types) ? data.types : [])
+          .map((entry) => entry?.type?.name)
+          .filter((type) => typeof type === 'string' && type),
+        frontImage: data.sprites?.front_default || '',
+        backImage: data.sprites?.back_default || '',
+        audio: data.cries?.latest || '',
+      };
+      generatorMessage = 'Generation complete.';
+    } catch (error) {
+      generatorError = true;
+      generatorMessage = error instanceof TypeError
+        ? 'Could not reach the generator. Check the connection and website proxy.'
+        : (error.message || 'Generation failed.');
+    } finally {
+      generatorPending = false;
+      render();
+    }
+  }
+
   function renderView() {
     if (state.battle && state.view === 'field') return battleView();
     if (state.view === 'home') return homeView();
@@ -251,6 +317,7 @@
     if (state.view === 'coven') return covenView().replace(/<button class="spirit-action" data-action="spirit-detail" data-id="([^"]+)">.*?<\/button>/g, (button, id) => `${button}${isSoul(state.spirits.find((s) => s.id === id)) ? '' : `<button class="spirit-action" data-action="store-spirit" data-id="${id}">STORE AT SANCTUM</button>`}`);
     if (state.view === 'satchel') return satchelView();
     if (state.view === 'hall') return hallView();
+    if (state.view === 'generator') return generatorView();
     return fieldView();
   }
 
@@ -600,6 +667,7 @@
     const id = target.dataset.id;
     switch (action) {
       case 'navigate': if (state.battle && !['home', 'field'].includes(target.dataset.view)) break; state.modal = null; state.view = target.dataset.view; finishUpdate(); break;
+      case 'generator-mode': if (['id', 'type'].includes(target.dataset.mode)) { generatorMode = target.dataset.mode; render(); } break;
       case 'select-region': state.region = target.dataset.region; finishUpdate(); break;
       case 'enter-grass': enterGrass(); break;
       case 'survey': survey(); break;
@@ -679,6 +747,48 @@
     if (target.dataset.action === 'scrim-close' && event.target !== target) return;
     handleAction(target.dataset.action, target);
   });
+  app.addEventListener('input', (event) => {
+    if (event.target.id === 'generator-pokemon-id') generatorIdInput = event.target.value;
+  });
+  app.addEventListener('change', (event) => {
+    if (event.target.id === 'generator-pokemon-type') generatorTypeInput = event.target.value;
+  });
+  app.addEventListener('submit', (event) => {
+    const form = event.target.closest('form[data-generator-form]');
+    if (!form) return;
+    event.preventDefault();
+    if (generatorPending) return;
+
+    if (form.dataset.generatorForm === 'id') {
+      const idInput = form.querySelector('[name="id"]');
+      generatorIdInput = idInput.value;
+      const pokemonId = Number(idInput.value);
+      if (!Number.isInteger(pokemonId) || pokemonId < 1) {
+        generatorMessage = 'Enter a Pokemon ID of 1 or higher.';
+        generatorError = true;
+        render();
+        return;
+      }
+      requestCreatureGeneration(GENERATE_BY_ID_URL, { id: pokemonId });
+      return;
+    }
+
+    const typeInput = form.querySelector('[name="type"]');
+    generatorTypeInput = typeInput.value;
+    if (!GENERATOR_TYPES.includes(generatorTypeInput)) {
+      generatorMessage = 'Choose a Pokemon type first.';
+      generatorError = true;
+      render();
+      return;
+    }
+    requestCreatureGeneration(GENERATE_BY_TYPE_URL, { type: generatorTypeInput });
+  });
+  app.addEventListener('error', (event) => {
+    if (event.target.matches?.('[data-generator-image]')) {
+      const asset = event.target.closest('.generator-asset');
+      if (asset) asset.hidden = true;
+    }
+  }, true);
   app.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     const brand = event.target.closest('.brand-home[role="button"]');
