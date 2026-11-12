@@ -129,11 +129,11 @@ def generate_by_type(body: GenerateByTypeRequest):
 
     pokemon_data["name"] = name
     pokemon_data["description"] = description
-    pokemon_data.setdefault("sprites", {}).update(
-        front_default=asset_urls["front_default"],
-        back_default=asset_urls["back_default"],
-    )
-    pokemon_data.setdefault("cries", {})["latest"] = asset_urls["latest"]
+    pokemon_data["sprites"] = {
+        "front_default": asset_urls["front_default"],
+        "back_default": asset_urls["back_default"],
+    }
+    pokemon_data["cries"] = {"latest": asset_urls["latest"]}
     return pokemon_data
 
 @app.post("/generateById")
@@ -208,11 +208,11 @@ def generate_by_id(body: GenerateByIdRequest):
 
     pokemon_data["name"] = name
     pokemon_data["description"] = description
-    pokemon_data.setdefault("sprites", {}).update(
-        front_default=asset_urls["front_default"],
-        back_default=asset_urls["back_default"],
-    )
-    pokemon_data.setdefault("cries", {})["latest"] = asset_urls["latest"]
+    pokemon_data["sprites"] = {
+        "front_default": asset_urls["front_default"],
+        "back_default": asset_urls["back_default"],
+    }
+    pokemon_data["cries"] = {"latest": asset_urls["latest"]}
     return pokemon_data
 
 @app.post("/generateImage")
